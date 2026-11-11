@@ -5950,9 +5950,11 @@ int main(int argc, char** argv) {
 
     strata::core::NativeDense native_dense;
     if (!o.native_dense_gguf.empty()) {
-        // MULTINODE: a stage loads only its own layers' projections; a head leaves its remote stages' range out
+        // MULTINODE: a stage loads only its own layers' projections; a head leaves its remote stages' range out.
+        // --remote-stage local is the exception: that stage runs in THIS engine, so its projections stay loaded.
         std::vector<std::pair<int64_t, int64_t>> never_run;
-        if (remote_head && split_at.size() >= 2) never_run.push_back({split_at.front(), split_at.back()});
+        if (remote_head && split_at.size() >= 2 && o.remote_stage != "local")
+            never_run.push_back({split_at.front(), split_at.back()});
         if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key,
                                stage_mode ? g_stage_lb : 0, stage_mode ? g_stage_le : -1,
                                never_run.empty() ? nullptr : &never_run)) {
@@ -6683,8 +6685,9 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: profile %s: %zu ranked pairs, built for %lld slots\n",
                      o.expert_profile.c_str(), profile.size(), (long long) pslots);
         // MULTINODE: each engine's VRAM cache and RAM tier hold only the layers it runs - the stage [K1, K2),
-        // the head the rest (its remote range is the stage engines')
-        if (stage_mode || (remote_head && !split_at.empty())) {
+        // the head the rest (its remote range is the stage engines'). --remote-stage local runs the stage here,
+        // so this engine runs every layer and keeps the whole profile.
+        if (stage_mode || (remote_head && !split_at.empty() && o.remote_stage != "local")) {
             const int64_t lo = stage_mode ? g_stage_lb : split_at.front(), hi = stage_mode ? g_stage_le : split_at.back();
             std::vector<std::pair<int32_t, int32_t>> mine;
             for (const auto& pr : profile)
@@ -14708,6 +14711,8 @@ std::vector<float*> hand((size_t) n_stages - 1, nullptr), hand_host((size_t) n_s
             split_drive.pcie_num[0] = drive.d.pcie_num;
             split_drive_b.pcie_num[0] = drive.d.pcie_num;
             for (int st = 1; st < n_stages; ++st) {
+                // MULTINODE: a remote stage (and --remote-stage local) has no GpuStage behind it - its link is its own
+                if ((size_t) (st - 1) >= stages.size()) continue;
                 GpuStage& gs = *stages[(size_t) st - 1];
                 if (!(gs.link_gbps > 0.0)) continue;
                 gs.pcie_frac = std::min(pcie_share_max(), std::max(0.10, std::round(gs.link_gbps / (gs.link_gbps +
