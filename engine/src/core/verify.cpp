@@ -19,6 +19,7 @@
 #include "strata/core/host_graph_launch.hpp"
 #endif
 #include "strata/core/remote_expert_opt.hpp"
+#include "strata/core/remote_stage.hpp"   // MULTINODE: a stage in another engine
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/spec_prob.hpp"
 #include "strata/core/spec_proposal.hpp"
@@ -3491,6 +3492,17 @@ static inline void metal_fold_nf(uint32_t nf_mask, uint32_t scan, int T, const i
 
 bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out,
                    std::string& err) {
+    if (remote_ != nullptr) {   // MULTINODE: the stage runs in another engine; its hand-off comes back over the link
+        if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
+        // STRATA_MN_GAP_MS=N (a test knob): wait N ms before each window, to see what an idle gap does to the stage
+        static const int gap_ms = [] { const char* e = std::getenv("STRATA_MN_GAP_MS"); return e ? std::atoi(e) : 0; }();
+        if (gap_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(gap_ms));
+        if (!remote_->window(T, pos0, tokens, rin_, rout_, err)) return false;
+        last_t_ = T;
+        last_pos0_ = pos0;
+        ++windows;
+        return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
+    }
     const bool measure = spec_measure_;
     // Clear this borrow and propagated stage borrows on every exit.
     struct ProposalBorrow {
@@ -4163,6 +4175,11 @@ namespace { bool g_commit_async = false; }
 void Verifier::set_commit_async(bool on) { g_commit_async = on && std::getenv("STRATA_COMMIT_SYNC") == nullptr; }
 
 bool Verifier::commit(int n_keep, std::string& err) {
+    if (remote_ != nullptr) {   // MULTINODE: the stage commits its own layers' state
+        if (n_keep < 1 || n_keep > last_t_) { err = "verify: commit count out of range"; return false; }
+        if (!remote_->commit(n_keep, err)) return false;
+        return next_ == nullptr || next_->commit(n_keep, err);
+    }
 #if defined(STRATA_GPU_METAL)
     return strata::metal_engine::window_commit(metal_, n_keep, err);
 #endif
