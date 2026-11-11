@@ -23,7 +23,8 @@ public:
     /// With layer_hi >= 0, only the `blk.<l>.` matrices with layer_lo <= l < layer_hi are uploaded (a layer
     /// split's stage holds its own layers' projections, not the whole model's); the others keep data == nullptr.
     bool load(const std::vector<std::string>& shards, WeightTable& table, std::string& err,
-              bool include_ple_key = false, int64_t layer_lo = 0, int64_t layer_hi = -1);
+              bool include_ple_key = false, int64_t layer_lo = 0, int64_t layer_hi = -1,
+              const std::vector<std::pair<int64_t, int64_t>>* skip = nullptr);
     /// Frees the uploaded matrices and the scratch, so `load` can run again.  The WeightRefs that pointed at them
     /// must not be used afterwards (the caller reloads their table too).
     void release();
