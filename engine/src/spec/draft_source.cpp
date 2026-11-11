@@ -1,6 +1,7 @@
 // src/spec/draft_source.cpp - see include/strata/spec/draft_source.hpp.
 #include "strata/spec/draft_source.hpp"
 
+#include <cstdlib>
 #include <vector>
 
 namespace strata::spec {
@@ -8,6 +9,19 @@ namespace strata::spec {
 std::vector<std::unique_ptr<DraftSource>>& extra_draft_sources() {
     static std::vector<std::unique_ptr<DraftSource>> sources;
     return sources;
+}
+
+void ensure_session_lookup_source() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_LOOKUP_SESSION");
+        return v != nullptr && v[0] == '1';
+    }();
+    static bool registered = false;
+    if (!on || registered) return;
+    registered = true;
+    // 256k tokens of session history (~25 MB of automaton), matches of at least 3 tokens - the Kinetic defaults
+    static SuffixIndex session(1u << 18, 3);
+    extra_draft_sources().push_back(std::make_unique<SessionLookupSource>(session));
 }
 
 int propose_from_sources(DraftSource& own, const int32_t* tail, int n_tail, int n_pending, int max_k, int min_match,

@@ -10,6 +10,7 @@
 #pragma once
 
 #include "strata/spec/suffix_drafter.hpp"
+#include "strata/spec/suffix_index.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -51,8 +52,49 @@ private:
     SuffixDrafter& d_;
 };
 
+/// The whole session (all requests since the engine started), indexed by the suffix automaton: a proposal may
+/// continue text an earlier request wrote, and matches longer than the trigram drafter's 64-token cap.
+class SessionLookupSource final : public DraftSource {
+public:
+    explicit SessionLookupSource(SuffixIndex& idx) : idx_(idx) {}
+    const char* name() const override { return "session-automaton"; }
+    /// The session keeps what it learned; a new request only extends it.
+    void reset() override {}
+    /// Kinetic's lag (speculative/mod.rs): the newest committed token is pushed onto the context before the
+    /// drafter proposes and only observed once the next token is known - the automaton holds everything
+    /// except the token whose continuation we predict. We hold that one token back until the next append.
+    void append(const int32_t* tokens, size_t n) override {
+        if (n == 0) return;
+        if (have_held_) idx_.append(&held_, 1);
+        held_ = tokens[n - 1];
+        have_held_ = true;
+        idx_.append(tokens, n - 1);
+    }
+    int propose(const int32_t* tail, int n_tail, int n_pending, int max_k, int32_t* out, int* match) override {
+        if (!have_held_) return 0;
+        n_pending = n_pending < n_tail ? n_pending : n_tail;
+        int32_t query[64];
+        query[0] = held_;
+        for (int i = 0; i < n_pending; ++i) query[1 + i] = tail[n_tail - n_pending + i];
+        const int k = idx_.draft(query, n_pending + 1, max_k, out);
+        *match = k > 0 ? idx_.last_match() : 0;
+        return k;
+    }
+
+private:
+    SuffixIndex& idx_;
+    int32_t held_ = 0;
+    bool have_held_ = false;
+};
+
 /// Sources besides the request's own text, asked after it (empty unless something registered one at startup).
 std::vector<std::unique_ptr<DraftSource>>& extra_draft_sources();
+
+/// STRATA_LOOKUP_SESSION=1: register the built-in session automaton (Kinetic's cross-request lookup, see
+/// strata/spec/suffix_index.hpp). Call once at engine start; without the variable it registers nothing, and a
+/// second call is a no-op. The index lives for the process and keeps what it learned across requests - unlike
+/// the request's own drafter, which reset() clears.
+void ensure_session_lookup_source();
 
 /// Ask `own` and then every extra source; the proposal with the longest match of at least `min_match` wins
 /// (ties keep the earlier source). Returns its length (0 = none); `*match` and `*source` (index: 0 = own) describe it.
