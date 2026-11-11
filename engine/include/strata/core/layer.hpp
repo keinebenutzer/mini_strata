@@ -219,10 +219,25 @@ struct QsaState {
     bool kv_q4 = false;
     uint8_t* k_q4 = nullptr;
     uint8_t* v_q4 = nullptr;
+    /// turbo2 (`--kv turbo2`, qsa_set_kv_turbo2, kv_turbo.hpp): 2-bit codes on the same rotation: 80 B per cell
+    /// and head. Rides the kv_q4 rotation sites (kv_rot is true for it); only the quantizer and pools differ.
+    bool kv_turbo2 = false;
+    uint8_t* k_turbo = nullptr;
+    uint8_t* v_turbo = nullptr;
+    /// turbo3 (`--kv turbo3`, qsa_set_kv_turbo3, kv_turbo3.hpp): 3-bit codes on the same rotation: 112 B per
+    /// cell and head (448 per cell). Same rotation sites as turbo2; one more bit, 14-byte blocks.
+    bool kv_turbo3 = false;
+    uint8_t* k_turbo3 = nullptr;
+    uint8_t* v_turbo3 = nullptr;
     /// Hybrid K8V4: K in INT8 (unrotated - the scores stay exact), V in rotated Q4_0 (kv_q4.hpp): 816 B per cell.
     /// Uses k_q/k_scale + v_q4. Mode 0 only (no KV streaming, no ring); under this setting the MTP drafter's
     /// ring state stays plain INT8, so the block movers never see the hybrid layout.
     bool kv_hybrid = false;
+    /// Asymmetric k3v8 (`--kv k3v8`, qsa_set_kv_k3v8, kv_k3v8.hpp): K as turbo3 codes on the rotation, V as
+    /// plain int8 with fp16 scales (kv_q8.hpp), both halves rotated like turbo2/turbo3: 752 B per cell at
+    /// head_dim 256. Uses k_turbo3 + v_q/v_scale; the appends fold each half onto its pool exactly like
+    /// kKvHybrid (kv_stream.hpp's kv_k3v8_*_half), so no kernels of its own exist.
+    bool kv_k3v8 = false;
     /// K and V go through kv_q4.hpp's Walsh-Hadamard rotation before they are stored, the queries too, the output
     /// back: always for Q4_0, for INT8 by qsa_set_kv_int8_rotate (spreads outlier channels over the scale groups)
     bool kv_rot = false;
@@ -315,13 +330,28 @@ bool qsa_kv_int8();
 /// PR #21: store K/V as Q4_0 after a Hadamard rotation (`--kv q4_0`): 576 B per cell, vs 1,056 in INT8.
 void qsa_set_kv_q4(bool enabled);
 bool qsa_kv_q4();
+/// turbo2 (`--kv turbo2`): 2-bit codes after the same Hadamard rotation (`kv_turbo.hpp`): 320 B per cell.
+void qsa_set_kv_turbo2(bool enabled);
+bool qsa_kv_turbo2();
+/// turbo3 (`--kv turbo3`): 3-bit codes after the same Hadamard rotation (`kv_turbo3.hpp`): 448 B per cell.
+void qsa_set_kv_turbo3(bool enabled);
+bool qsa_kv_turbo3();
 /// Hybrid K8V4 (`--kv k8v4`): K in INT8, V in rotated Q4_0 - 816 B per cell; streams with --kv-resident too.
 void qsa_set_kv_hybrid(bool enabled);
 bool qsa_kv_hybrid();
-/// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvHybrid).
+/// k3v8 (`--kv k3v8`): asymmetric — K as rotated turbo3 codes, V as rotated int8 + fp16 scales (`kv_k3v8.hpp`):
+/// 752 B per cell at head_dim 256. Rides the rotation sites; the halves are written by the single-format kernels.
+void qsa_set_kv_k3v8(bool enabled);
+bool qsa_kv_k3v8();
+/// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvHybrid /
+/// kKvTurbo2 / kKvTurbo3).
 inline int qsa_kv_format(const QsaState& st) {
     if (st.kv_hybrid) return strata::kernels::kKvHybrid;   // K8V4: its own three runs (kv_stream.cu)
-    return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
+    if (st.kv_k3v8) return strata::kernels::kKvK3V8;       // k3v8: turbo3 K + int8 V, three runs too
+    return st.kv_q4 ? strata::kernels::kKvQ4
+           : st.kv_turbo2 ? strata::kernels::kKvTurbo2
+           : st.kv_turbo3 ? strata::kernels::kKvTurbo3
+           : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
                         const QsaState* share_rope = nullptr, int64_t ring_cells = 0);

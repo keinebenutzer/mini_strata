@@ -619,7 +619,7 @@ class Catalog:
             from strata_control import hy4_fit
             return tokens * hy4_fit.KV_GB_PER_TOKEN
         mod = self.strata.setup_module()
-        table = getattr(mod, "UD_FIT_KV_BYTES", None) or {"fp16": 2112, "int8": 1056, "q4_0": 576, "k8v4": 816}
+        table = getattr(mod, "UD_FIT_KV_BYTES", None) or {"fp16": 2112, "int8": 1056, "q4_0": 576, "turbo2": 320, "turbo3": 448, "k3v8": 752, "k8v4": 816}
         return tokens * 13 * table.get(kv, 1056) / 1e9
 
     def max_context(self, family: str, model: str, hw: dict | None = None) -> int | None:

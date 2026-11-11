@@ -299,8 +299,8 @@ CUDA12_WHEELS = ["nvidia-cublas-cu12==12.9.1.4", "nvidia-cuda-runtime-cu12==12.9
 CUDA12_COMPAT_DRIVER = 528 if WIN else 525
 ENGINE12_DIR = "engine-cuda12"
 MIN_ENGINE = (0, 1, 46)                # versions compare all numbers; v0.1.60: engine changes since v0.2.13.1 (git log 628f74955..HEAD); v0.1.59: engine changes since v0.2.12 (git log 146df3c46..HEAD); v0.1.58: engine rounds 0215-0217 (tuned drafters, the file-tier re-check, prefill and Q5_0 fixes; git log c3b3f5035..HEAD); v0.1.46: the 0.2 release engine (UPDATE.bat and setup fetch it from the signed feed, #3469 #3437); v0.1.45: Qwen3.6 parallel requests and pictures, fixes #2346 #2372 #2396; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
-# KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, hybrid K8V4 (8-bit K, 4-bit V) 816
-KV_CELL_BYTES = {"q4_0": 576, "k8v4": 816}
+# KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, rotated 2-bit 320, rotated 3-bit 448, hybrid K8V4 (8-bit K, 4-bit V) 816
+KV_CELL_BYTES = {"q4_0": 576, "turbo2": 320, "turbo3": 448, "k3v8": 752, "k8v4": 816}
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "pillow", "psutil"]
 REQUIREMENTS = ROOT / "requirements.txt"   # the same packages and their dependencies, pinned (#214)
 BUILD_PACKAGES = ["cmake", "ninja"]
@@ -8568,8 +8568,8 @@ UD_FIT_MIN_SLACK_MIB = 64         # at least a few cache slots beside the estima
 UD_FIT_CARD_GB = 9.5              # the check is for cards up to here
 UD_FIT_RUNTIME_MIB = 250          # CUDA / HIP: the runtime's own context (the SYCL measurement above has none of it)
 UD_FIT_ENGINE_RESERVE_MIB = 300   # the reserve the engine settles on when none is given and the card is tight
-KV_WORDS = {"int8": "8-bit", "q4_0": "4-bit (Hadamard-rotated)", "k8v4": "8-bit keys, 4-bit values", "fp16": "16-bit"}
-UD_FIT_KV_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "k8v4": 816}   # per token per attention layer (13)
+KV_WORDS = {"int8": "8-bit", "q4_0": "4-bit (Hadamard-rotated)", "turbo2": "2-bit (Hadamard-rotated)", "turbo3": "3-bit (Hadamard-rotated)", "k3v8": "3-bit keys, 8-bit values (Hadamard-rotated)", "k8v4": "8-bit keys, 4-bit values", "fp16": "16-bit"}
+UD_FIT_KV_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "turbo2": 320, "turbo3": 448, "k3v8": 752, "k8v4": 816}   # per token per attention layer (13)
 UD_FIT_CTX_STEPS = (8192, 6144, 4608)
 
 
@@ -10390,9 +10390,11 @@ def main() -> int:
     ap.add_argument("--rope-scale", type=float,
                     help="the extension factor, finite and >= 1 (default: the final context over the trained "
                          "262144, at least 1 - 1.5 for 384K, 2 for 512K, 1 inside the trained range)")
-    ap.add_argument("--kv", choices=["int8", "q4_0", "k8v4", "fp16"],
+    ap.add_argument("--kv", choices=["int8", "q4_0", "turbo2", "turbo3", "k3v8", "k8v4", "fp16"],
                     help="KV cache precision above 8K context: int8 (default), q4_0 (half the memory, a little less "
-                         "precise) k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell) or fp16 (16-bit, twice the memory of int8)")
+                         "precise), turbo2 (2-bit Hadamard-rotated, 320 B/cell), turbo3 (3-bit Hadamard-rotated, "
+                         "448 B/cell), k3v8 (asymmetric: rotated 3-bit K + rotated 8-bit V, 752 B/cell), "
+                         "k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell) or fp16 (16-bit, twice the memory of int8)")
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
                     help="let the model read images (on by default where the model can; yes = the best reader for this card: the CPU "
                          "under 24 GB of VRAM, the GPU from 24 GB, any make; gpu / cpu = that reader; no = text only)")
@@ -11118,10 +11120,17 @@ def main() -> int:
     if ctx > 8192 and not a.kv and not a.yes:
         say()
         say("  KV cache precision (the model's memory of the conversation):")
-        say("  1) 8-bit   (recommended: what every published number was measured with)")
-        say("  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long")
-        say("             documents; long-context lookups (needle tests) still pass")
-        kv = ["int8", "q4_0"][int(ask("KV cache?", ["1", "2"], "1", a.yes)) - 1]
+        say("  1) 8-bit     (recommended: what every published number was measured with)")
+        say("  2) 4-bit     half the memory (about 4% faster at 128K), but measurably less precise on long")
+        say("               documents; long-context lookups (needle tests) still pass")
+        say("  3) turbo2    2-bit after the Hadamard rotation (320 B/cell): the smallest cache, the most")
+        say("               precision loss; the pick when memory is the limit")
+        say("  4) turbo3    3-bit after the Hadamard rotation (448 B/cell): between turbo2 and 4-bit")
+        say("  5) k3v8      asymmetric (the llama.cpp -ctk/-ctv idea): rotated 3-bit keys + 8-bit values")
+        say("               (752 B/cell): the values stay near-exact, the keys take the 3-bit route")
+        say("  6) k8v4      hybrid: 8-bit keys, 4-bit values (816 B/cell)")
+        kv = ["int8", "q4_0", "turbo2", "turbo3", "k3v8", "k8v4"][
+            int(ask("KV cache?", [str(i) for i in range(1, 7)], "1", a.yes)) - 1]
     if ctx > 8192:
         ok(f"KV cache: {KV_WORDS.get(kv, kv)}")
     if MODELS[model].get("vision", fam.get("vision")) is False:     # UD-IQ4_XS: images, unlike UD-Q4_K_XL

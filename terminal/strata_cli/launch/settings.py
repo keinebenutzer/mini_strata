@@ -32,7 +32,8 @@ SPLIT_MODES = ("auto", "on", "off")
 DRAFTING_MODES = ("auto", "mtp", "dflash2", "off")
 #: setup.py DRAFT_VOCABS (tests/terminal/test_launch_draft_vocab.py keeps the two the same)
 DRAFT_VOCAB_MODES = ("cjk", "en", "cyrillic", "fr", "latin")
-KV_MODES = ("int8", "q4_0", "k8v4", "fp16")
+KV_MODES = ("int8", "q4_0", "turbo2", "turbo3", "k3v8", "k8v4", "fp16")
+) getragen: 23 von 25 Stellen fielen konfliktfrei, zwei brauchten Handarbeit - CMakeLists.txt wurde upstream nach cmake/strata_gpu_engine.cmake ausgelagert (Kernel-Liste und kv_turbo_parity-Test dort nachgetragen), setup.py MIN_ENGINE-Zeile folgt jetzt Upstreams v0.1.59-Eintrag, unsere zwei KV_CELL_BYTES-Zeilen darunter bleiben):strata_cli/launch/settings.py
 DEFAULT_PORT = 8080
 
 #: How many requests the card can answer at once (the spec's "fit to card" default): by graphics memory.
