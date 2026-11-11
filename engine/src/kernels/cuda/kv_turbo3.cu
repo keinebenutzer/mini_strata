@@ -29,7 +29,13 @@ void check(const char* what) {
 // The packing is a warp-wide OR of each lane's disjoint 3-bit field qc << 3*lane, held in a 128-bit accumulator
 // (the fields never overlap, so OR is associative and every lane ends with the identical 96-bit stream - the
 // same stream the host reference builds byte by byte).
-__device__ __forceinline__ uint16_t turbo3_group(float x, int lane, uint8_t* bytes) {
+// The group's result as three integers: the scale plus the 96-bit code stream in its two halves. Deliberately
+// NOT a byte array — an address-taken `uint8_t bytes[12]` lands on the stack (STACK 16 on sm_86) and the spill
+// guard (tools/check_cuda_spills.py) wants STACK 0 from every kernel. The store below takes the byte it wants
+// straight out of the two halves.
+struct Turbo3Group { uint16_t d; unsigned long long lo; unsigned long long hi; };
+
+__device__ __forceinline__ Turbo3Group turbo3_group(float x, int lane) {
     float amax = fabsf(x);
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
@@ -46,18 +52,15 @@ __device__ __forceinline__ uint16_t turbo3_group(float x, int lane, uint8_t* byt
         hi |= __shfl_xor_sync(0xffffffffu, hi, o);
         acc = ((unsigned __int128) hi << 64) | (unsigned __int128) lo;
     }
-    const unsigned long long lo = (unsigned long long) acc, hi = (unsigned long long) (acc >> 64);
-#pragma unroll
-    for (int j = 0; j < 12; ++j)
-        bytes[j] = j < 8 ? (uint8_t) (lo >> (8 * j)) : (uint8_t) (hi >> (8 * (j - 8)));
-    return dbits;
+    return {dbits, (unsigned long long) acc, (unsigned long long) (acc >> 64)};
 }
 
-__device__ __forceinline__ void turbo3_store(uint8_t* pool, long long row, int b, int lane, uint16_t d,
-                                             const uint8_t* bytes) {
+__device__ __forceinline__ void turbo3_store(uint8_t* pool, long long row, int b, int lane, const Turbo3Group& g) {
     block_turbo3* blk = reinterpret_cast<block_turbo3*>(pool + row * (long long) sizeof(block_turbo3) * 8) + b;
-    if (lane == 0) blk->d = d;
-    if (lane < 12) blk->qs[lane] = bytes[lane];
+    if (lane == 0) blk->d = g.d;
+    // byte j of the 96-bit stream: the low half carries bytes 0..7, the high half bytes 8..11
+    if (lane < 12)
+        blk->qs[lane] = lane < 8 ? (uint8_t) (g.lo >> (8 * lane)) : (uint8_t) (g.hi >> (8 * (lane - 8)));
 }
 
 // One block = one 32-value group of one KV head of K (plane 0) or V (plane 1) for token step_idx; 32 threads.
@@ -72,14 +75,13 @@ __global__ void kv_append_turbo3_kernel(uint8_t* __restrict__ k_turbo3, uint8_t*
     const int h = blockIdx.x, b = blockIdx.y, t = threadIdx.x;
     const long long step_off = (long long) step_idx * kv_heads * head_dim;
     const float x = (is_v ? vcur : kcur)[step_off + h * head_dim + b * KV_TURBO3_GROUP + t];
-    uint8_t bytes[12];
-    const uint16_t d = turbo3_group(x, t, bytes);
+    const Turbo3Group g = turbo3_group(x, t);
     const long long page = (long long) table[pos / page_size];
     if (page >= 0)
-        turbo3_store(is_v ? v_turbo3 : k_turbo3, (page * kv_heads + h) * page_size + (pos % page_size), b, t, d, bytes);
+        turbo3_store(is_v ? v_turbo3 : k_turbo3, (page * kv_heads + h) * page_size + (pos % page_size), b, t, g);
     if (host.k_turbo3 != nullptr)
         turbo3_store(is_v ? host.v_turbo3 : host.k_turbo3, ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size),
-                     b, t, d, bytes);
+                     b, t, g);
 }
 
 // The prompt path: grid (T, kv_heads, groups), K then V; also into the staging pool (identity layout) when given.
@@ -93,14 +95,13 @@ __global__ void kv_append_turbo3_batch_kernel(uint8_t* __restrict__ k_turbo3, ui
     const int h = blockIdx.y, b = blockIdx.z, th = threadIdx.x;
     const bool is_v = is_v_grid != 0;
     const float x = (is_v ? V : K)[t * (kv_heads * head_dim) + h * head_dim + b * KV_TURBO3_GROUP + th];
-    uint8_t bytes[12];
-    const uint16_t d = turbo3_group(x, th, bytes);
+    const Turbo3Group g = turbo3_group(x, th);
     const long long page = (long long) table[pos / page_size];
     const long long row_id = ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size);
     if (page >= 0)
-        turbo3_store(is_v ? v_turbo3 : k_turbo3, (page * kv_heads + h) * page_size + (pos % page_size), b, th, d, bytes);
-    if (host.k_turbo3 != nullptr) turbo3_store(is_v ? host.v_turbo3 : host.k_turbo3, row_id, b, th, d, bytes);
-    if (stage.k_turbo3 != nullptr) turbo3_store(is_v ? stage.v_turbo3 : stage.k_turbo3, row_id, b, th, d, bytes);
+        turbo3_store(is_v ? v_turbo3 : k_turbo3, (page * kv_heads + h) * page_size + (pos % page_size), b, th, g);
+    if (host.k_turbo3 != nullptr) turbo3_store(is_v ? host.v_turbo3 : host.k_turbo3, row_id, b, th, g);
+    if (stage.k_turbo3 != nullptr) turbo3_store(is_v ? stage.v_turbo3 : stage.k_turbo3, row_id, b, th, g);
 }
 
 // The 3-bit unpack of value `e` of a group's bitstream (byte (3e)>>3, shift (3e)&7; shifts 6 and 7 straddle the
