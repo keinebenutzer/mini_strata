@@ -18,6 +18,8 @@
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_turbo.hpp"
+#include "strata/kernels/kv_turbo3.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/native_moe.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -410,9 +412,12 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     // K8V4 never applies to the drafter: its own attention paths (below, and verify.cpp) handle whole formats
     // only, whatever ring shape it takes (0, a window, or the -1 fully-resident fallback).
     const bool kv_hybrid_was = qsa_kv_hybrid();
+    const bool kv_k3v8_was = qsa_kv_k3v8();
     const bool kv_int8_was = qsa_kv_int8();
     qsa_set_kv_hybrid(false);
     if (kv_hybrid_was) qsa_set_kv_int8(true);   // the drafter under --kv k8v4: plain INT8
+    qsa_set_kv_k3v8(false);
+    if (kv_k3v8_was) qsa_set_kv_int8(true);     // the drafter under --kv k3v8: plain INT8 too
     uint64_t sb = qsa_state_bytes(g, max_cells, false, ring);
     if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
     if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) {
@@ -428,6 +433,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     }
     qsa_set_kv_int8(kv_int8_was);
     qsa_set_kv_hybrid(kv_hybrid_was);
+    qsa_set_kv_k3v8(kv_k3v8_was);
     qsa_state_zero(st_, g, nullptr);
     cudaDeviceSynchronize();
     vram_ += sb;
@@ -1157,14 +1163,24 @@ bool MtpDrafter::record_front(int T, int row0, cudaStream_t cs, std::string& err
             fwht256_inplace_cuda(vcur_, (int64_t) T * NKV, cs);
         }
         // stored in the state's own format (#293 appended rotated INT8 K/V as Q4_0, into pools INT8 never has)
-        if (!no_batch_kv && st_.kv_q4)
+        if (!no_batch_kv && st_.kv_turbo3)
+            kv_append_turbo3_steps(st_.k_turbo3, st_.v_turbo3, st_.page_table, step, 4, T, kcur_, vcur_, s, cs, &st_.host);
+        else if (!no_batch_kv && st_.kv_turbo2)
+            kv_append_turbo2_steps(st_.k_turbo, st_.v_turbo, st_.page_table, step, 4, T, kcur_, vcur_, s, cs, &st_.host);
+        else if (!no_batch_kv && st_.kv_q4)
             kv_append_q4_steps(st_.k_q4, st_.v_q4, st_.page_table, step, 4, T, kcur_, vcur_, s, cs, &st_.host);
         else if (!no_batch_kv && st_.kv_int8)
             kv_append_q8_steps(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step, 4, kcur_, vcur_,
                                (int) (NKV * HD), T, s, cs, &st_.host);
         else
             for (int t = 0; t < T; ++t) {
-                if (st_.kv_q4)
+                if (st_.kv_turbo3)
+                    kv_append_turbo3_step(st_.k_turbo3, st_.v_turbo3, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
+                                          vcur_ + t * NKV * HD, s, cs, &st_.host);
+                else if (st_.kv_turbo2)
+                    kv_append_turbo2_step(st_.k_turbo, st_.v_turbo, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
+                                          vcur_ + t * NKV * HD, s, cs, &st_.host);
+                else if (st_.kv_q4)
                     kv_append_q4_step(st_.k_q4, st_.v_q4, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
                                       vcur_ + t * NKV * HD, s, cs, &st_.host);
                 else if (st_.kv_int8)

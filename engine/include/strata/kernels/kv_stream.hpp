@@ -38,14 +38,22 @@ struct KvHostPools {
     uint16_t* v_scale = nullptr;
     uint8_t* k_q4 = nullptr;      ///< q4_0 mode (kv_q4.hpp): block_q4_0 codes, 144 B per cell and head
     uint8_t* v_q4 = nullptr;
-    bool present() const { return k_pool != nullptr || k_q != nullptr || k_q4 != nullptr; }
+    uint8_t* k_turbo = nullptr;   ///< turbo2 mode (kv_turbo.hpp): block_turbo2 codes, 80 B per cell and head
+    uint8_t* v_turbo = nullptr;
+    uint8_t* k_turbo3 = nullptr;  ///< turbo3 mode (kv_turbo3.hpp): block_turbo3 codes, 112 B per cell and head
+    uint8_t* v_turbo3 = nullptr;
+    bool present() const {
+        return k_pool != nullptr || k_q != nullptr || k_q4 != nullptr || k_turbo != nullptr || k_turbo3 != nullptr;
+    }
 };
 
-/// The KV storage format, for the functions below that move whole blocks (`fmt`): fp16, int8 (+ scales), q4_0, and
-/// K8V4 (`--kv k8v4`: K as int8 codes + scales, V as rotated q4_0 - three runs, `k_q`, `k_scale`, `v_q4`).
+/// The KV storage format, for the functions below that move whole blocks (`fmt`): fp16, int8 (+ scales), q4_0,
+/// K8V4 (`--kv k8v4`: K as int8 codes + scales, V as rotated q4_0 - three runs, `k_q`, `k_scale`, `v_q4`),
+/// turbo2 (`--kv turbo2`: 2-bit codes on the same rotation, `kv_turbo.hpp`), and turbo3 (`--kv turbo3`: 3-bit
+/// codes on the same rotation, `kv_turbo3.hpp`).
 /// (A bool `int8` argument still reads as kKvF16 / kKvInt8.)  kKvHybrid is 3, the number conversation snapshots
 /// already give K8V4.
-enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3 };
+enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3, kKvTurbo2 = 4, kKvTurbo3 = 5, kKvK3V8 = 6 };
 
 /// K8V4's halves as the single-format append kernels see them, so a hybrid layer's host copy (and the prompt path's
 /// staging pool) is written by the same calls that write its VRAM pools: K is "int8 whose V is K", V is "q4_0 whose
@@ -59,6 +67,18 @@ inline KvHostPools kv_hybrid_k_half(const KvHostPools& h) {
 inline KvHostPools kv_hybrid_v_half(const KvHostPools& h) {
     KvHostPools r;
     r.k_q4 = h.v_q4; r.v_q4 = h.v_q4;
+    return r;
+}
+
+/// k3v8's halves the same way (`--kv k3v8`, kv_k3v8.hpp): K is "turbo3 whose V is K", V is "int8 whose K is V".
+inline KvHostPools kv_k3v8_k_half(const KvHostPools& h) {
+    KvHostPools r;
+    r.k_turbo3 = h.k_turbo3; r.v_turbo3 = h.k_turbo3;
+    return r;
+}
+inline KvHostPools kv_k3v8_v_half(const KvHostPools& h) {
+    KvHostPools r;
+    r.k_q = h.v_q; r.v_q = h.v_q; r.k_scale = h.v_scale; r.v_scale = h.v_scale;
     return r;
 }
 

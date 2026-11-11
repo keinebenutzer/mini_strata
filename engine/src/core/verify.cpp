@@ -51,6 +51,8 @@
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_turbo.hpp"
+#include "strata/kernels/kv_turbo3.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/megakernel.hpp"
@@ -2228,7 +2230,20 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                            kc_b, kc_b, (int) (NKV * HD), n, s, cs, mirror ? &hk : nullptr);
                         kv_append_q4_steps(st.v_q4, st.v_q4, st.page_table, step_b, kStepCount, n, vc_b, vc_b, s, cs,
                                            mirror ? &hv : nullptr);
-                    } else if (st.kv_q4)
+                    } else if (st.kv_k3v8) {   // k3v8: rotated turbo3 K + rotated int8 V (kv_k3v8.hpp), halves folded
+                        const KvHostPools hk = kv_k3v8_k_half(st.host), hv = kv_k3v8_v_half(st.host);
+                        const bool mirror = st.host.present();
+                        kv_append_turbo3_steps(st.k_turbo3, st.k_turbo3, st.page_table, step_b, kStepCount, n, kc_b, kc_b, s, cs,
+                                               mirror ? &hk : nullptr);
+                        kv_append_q8_steps(st.v_q, st.v_q, st.v_scale, st.v_scale, st.page_table, step_b, kStepCount,
+                                           vc_b, vc_b, (int) (NKV * HD), n, s, cs, mirror ? &hv : nullptr);
+                    } else if (st.kv_turbo3)
+                        kv_append_turbo3_steps(st.k_turbo3, st.v_turbo3, st.page_table, step_b, kStepCount, n, kc_b, vc_b, s, cs,
+                                               &st.host);
+                    else if (st.kv_turbo2)
+                        kv_append_turbo2_steps(st.k_turbo, st.v_turbo, st.page_table, step_b, kStepCount, n, kc_b, vc_b, s, cs,
+                                               &st.host);
+                    else if (st.kv_q4)
                         kv_append_q4_steps(st.k_q4, st.v_q4, st.page_table, step_b, kStepCount, n, kc_b, vc_b, s, cs,
                                            &st.host);
                     else if (st.kv_int8)
@@ -2262,6 +2277,17 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                             kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vc, vc, s, cs,
                                               mirror ? &hv : nullptr);
                         }
+                    } else if (st.kv_k3v8) {   // k3v8: rotated turbo3 K + rotated int8 V (kv_k3v8.hpp), halves folded
+                        const KvHostPools hk = kv_k3v8_k_half(st.host), hv = kv_k3v8_v_half(st.host);
+                        const bool mirror = st.host.present();
+                        kv_append_turbo3_step(st.k_turbo3, st.k_turbo3, st.page_table, step_t, kc, kc, s, cs,
+                                              mirror ? &hk : nullptr);
+                        kv_append_q8_step(st.v_q, st.v_q, st.v_scale, st.v_scale, st.page_table, step_t, vc, vc, s, cs,
+                                          mirror ? &hv : nullptr);
+                    } else if (st.kv_turbo3)
+                        kv_append_turbo3_step(st.k_turbo3, st.v_turbo3, st.page_table, step_t, kc, vc, s, cs, &st.host);
+                    else if (st.kv_turbo2)
+                        kv_append_turbo2_step(st.k_turbo, st.v_turbo, st.page_table, step_t, kc, vc, s, cs, &st.host);
                     } else if (st.kv_q4) {
                         if (m > 1) kv_append_q4_steps(st.k_q4, st.v_q4, st.page_table, step_t, kStepCount, m, kc, vc, s, cs, &st.host);
                         else kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kc, vc, s, cs, &st.host);

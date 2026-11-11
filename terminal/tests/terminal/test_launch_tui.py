@@ -431,7 +431,9 @@ class ContextStep(Base):
             self.assertIn("4-bit", t)
             self.assertIn("+0.2 GB", t)                               # 32K at 4-bit
             await press(pilot, "m")
-            self.assertEqual(ctx.settings.kv, "int8")
+            self.assertEqual(ctx.settings.kv, "turbo3")               # the cycle: int8 -> q4_0 -> turbo3 -> k3v8 -> turbo2
+            await press(pilot, "m")
+            self.assertEqual(ctx.settings.kv, "k3v8")
         self.run_app(case)
 
     def test_custom_size(self):

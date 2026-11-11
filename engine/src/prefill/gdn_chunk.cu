@@ -512,6 +512,8 @@ int gdn_chunk_cc_of(int dev) {
 }
 
 int gdn_chunk_cc() {
+    // referenced only from the STRATA_EXPERIMENTAL_SM60 branch of gdn_chunk_available() below
+    (void) gdn_chunk_cc;
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess) {
         cudaGetLastError();

@@ -95,6 +95,8 @@
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_turbo.hpp"
+#include "strata/kernels/kv_turbo3.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/core/spill_gate.hpp"
@@ -1213,6 +1215,12 @@ void usage() {
                  "                       VRAM; default fp16 until gate G-C accepts int8\n"
                  "  --kv q4_0            4-bit K/V after a Hadamard rotation (PR #21): half of int8's memory,\n"
                  "                       slightly lower precision (see bench/results/2026-09-27-kv-q4)\n"
+                 "  --kv turbo2          2-bit K/V after the same Hadamard rotation: 320 B per cell (vs 576 in\n"
+                 "                       q4_0); the same rotation sites, a coarser quantizer\n"
+                 "  --kv turbo3          3-bit K/V after the same Hadamard rotation: 448 B per cell (vs 320 in\n"
+                 "                       turbo2, 576 in q4_0); 8 uniform levels, 14-byte blocks\n"
+                 "  --kv k3v8            asymmetric: rotated turbo3 K + rotated INT8 V (llama.cpp's -ctk turbo3\n"
+                 "                       -ctv q8_0 idea): 752 B per cell (vs 448 turbo3, 816 k8v4); streams too\n"
                  "  --kv k8v4            hybrid: INT8 K (exact attention scores) + rotated Q4_0 V, 816 B/cell\n"
                  "                       (vs int8's 1,056); streams with --kv-resident too\n"
                  "  --kv-resident N      KV streaming: keep N cells of each QSA layer in VRAM (min 20480) and the\n"
@@ -4881,18 +4889,21 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (o.kv == "q4") o.kv = "q4_0";
-    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "k8v4") {
-        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0 or k8v4\n");
+    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "turbo2" && o.kv != "turbo3" && o.kv != "k3v8" && o.kv != "k8v4") {
+        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0, turbo2, turbo3, k3v8 or k8v4\n");
         return 2;
     }
     strata::core::qsa_set_kv_int8(o.kv == "int8");
     strata::core::qsa_set_kv_q4(o.kv == "q4_0");   // PR #21: 4-bit codes after a Hadamard rotation (kv_q4.hpp)
+    strata::core::qsa_set_kv_turbo2(o.kv == "turbo2");   // 2-bit codes on the same rotation (kv_turbo.hpp)
+    strata::core::qsa_set_kv_turbo3(o.kv == "turbo3");   // 3-bit codes on the same rotation (kv_turbo3.hpp)
     // STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation --kv q4_0 already uses. Opt-in: first-token KL to
     // fp16 K/V improved on an NVFP4 pack (0.0066 -> 0.0051) but not on IQ2_XS (0.0022 -> 0.0054)
     const char* kv_rot = std::getenv("STRATA_KV_ROT");
     strata::core::qsa_set_kv_int8_rotate(kv_rot != nullptr && kv_rot[0] == '1');
     if (kv_rot != nullptr && kv_rot[0] == '1' && o.kv == "int8")
         std::fprintf(stderr, "strata generate: STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation (opt-in)\n");
+    strata::core::qsa_set_kv_k3v8(o.kv == "k3v8");     // k3v8: rotated turbo3 K + rotated INT8 V, 752 B/cell
     strata::core::qsa_set_kv_hybrid(o.kv == "k8v4");   // K8V4: INT8 K + rotated Q4_0 V, 816 B/cell
     if (o.kv_resident < 0) {
         std::fprintf(stderr, "strata generate: --kv-resident must be >= 0\n");
@@ -6949,7 +6960,7 @@ int main(int argc, char** argv) {
         //
         // chunk_bytes uses a no-alloc fake SessionState.  qsa_state_init is NOT used: with base=nullptr it would
         // cudaMemcpy a null page table and kv_stream_reset a null map (CUDA "invalid argument") on a streamed
-        // state.  bytes_needed only reads max_cells and kv_mode/n_pages/kv_int8/kv_q4/kv_hybrid, so we set those
+        // state.  bytes_needed only reads max_cells and kv_mode/n_pages/kv_int8/kv_q4/kv_hybrid/kv_k3v8/kv_turbo2/kv_turbo3, so we set those
         // fields directly, replicating kv_plan's arithmetic (layer.cpp:634) with the public getters.
         auto chunk_bytes = [&](int64_t lb, int64_t c) -> uint64_t {
             strata::core::qsa_set_kv_resident(o.kv_resident);
@@ -6962,8 +6973,11 @@ int main(int argc, char** argv) {
                 if (r < pages) mode = 1;
             }
             const bool q4 = strata::core::qsa_kv_q4();
+            const bool tb2 = strata::core::qsa_kv_turbo2();
+            const bool tb3 = strata::core::qsa_kv_turbo3();
             const bool hyb = strata::core::qsa_kv_hybrid();
-            const bool i8 = strata::core::qsa_kv_int8() && !q4;
+            const bool k38 = strata::core::qsa_kv_k3v8();
+            const bool i8 = strata::core::qsa_kv_int8() && !q4 && !tb2 && !tb3;
             std::vector<strata::core::QsaState> qs((size_t) g.n_qsa_layers());
             for (int64_t j = 0; j < g.n_qsa_layers(); ++j) {
                 qs[(size_t) j].max_cells = o.max_context;
@@ -6971,7 +6985,10 @@ int main(int argc, char** argv) {
                 qs[(size_t) j].n_pages = pages;
                 qs[(size_t) j].kv_int8 = i8;
                 qs[(size_t) j].kv_q4 = q4;
+                qs[(size_t) j].kv_turbo2 = tb2;
+                qs[(size_t) j].kv_turbo3 = tb3;
                 qs[(size_t) j].kv_hybrid = hyb;
+                qs[(size_t) j].kv_k3v8 = k38;
             }
             strata::core::SessionState ss{};
             ss.max_cells = o.max_context;
@@ -9093,7 +9110,6 @@ int main(int argc, char** argv) {
     uint64_t per_layer_bytes = 0;
     if (native_pack && o.expert_cache > 0 && o.expert_cache_per_layer) {
         const size_t free_b = strata::core::device_free_bytes();   // the same reading the shared-cache sizing uses
-        const auto& lay = strata::kernels::cpu::expert_layout();
         const int asked = o.expert_cache;
         const uint64_t budget = (uint64_t) asked * nibble_max_slot_bytes();
         size_t free_room = free_b > ((size_t) o.vram_reserve_mib << 20) ? free_b - ((size_t) o.vram_reserve_mib << 20) : 0;
@@ -9119,7 +9135,6 @@ int main(int argc, char** argv) {
     } else if (native_pack && o.expert_cache > 0 && !profile.empty()) {
         size_t free_b = 0, total_b = 0;
         free_b = strata::core::device_free_bytes(); (void) total_b;
-        const auto& lay = strata::kernels::cpu::expert_layout();
         // what the uniform sizing granted, in the 256-byte slots the loop below counts: the blob formats of 1280 / 2560
         // rows are whole multiples of 256 already; an NVFP4 blob's 16-byte scale tail is not, and the unrounded budget
         // held one slot fewer than asked (--expert-cache 1: none)
@@ -9252,7 +9267,6 @@ int main(int argc, char** argv) {
             if (keep_bytes <= 0) { o.expert_cache = 0; sized_slots.clear(); return false; }
             if (per_layer_bytes > 0) {
                 // Cutting the list short would put one layer's blob in the next layer's range.
-                const auto& lay = strata::kernels::cpu::expert_layout();
                 int64_t q = keep_bytes / (int64_t) per_layer_bytes;
                 if (q > g.n_expert) q = g.n_expert;
                 sized_slots.clear();
@@ -17605,7 +17619,7 @@ int main(int argc, char** argv) {
             // every slot done: the last commits have run before anything reads a slot (between windows nothing does)
             if (pmtp && !pipe_inflight() && !batch_on() && !pmtp_settle()) return false;
             if (!pipe_inflight() && !batch_on() && bt_windows > 0) {   // all idle: the timing line, as batch_step
-                const double w = (double) bt_windows, wall = std::chrono::duration<double, std::milli>(Clock::now() - bt_start).count();
+                const double wall = std::chrono::duration<double, std::milli>(Clock::now() - bt_start).count();
                 p4.span_end(wall);
                 pc.flush(wall, pc_ex());
                 char pa_txt[224] = "";
@@ -22634,6 +22648,16 @@ int main(int argc, char** argv) {
                     if (st.kv_q4) {
                         const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
                         a = {{h ? st.host.k_q4 : st.k_q4, q4b}, {h ? st.host.v_q4 : st.v_q4, q4b}};
+                    } else if (st.kv_turbo2) {
+                        const int64_t t2b = (int64_t) strata::kernels::kv_turbo_bytes_per_head((int) qs.head_dim);
+                        a = {{h ? st.host.k_turbo : st.k_turbo, t2b}, {h ? st.host.v_turbo : st.v_turbo, t2b}};
+                    } else if (st.kv_turbo3) {
+                        const int64_t t3b = (int64_t) strata::kernels::kv_turbo3_bytes_per_head((int) qs.head_dim);
+                        a = {{h ? st.host.k_turbo3 : st.k_turbo3, t3b}, {h ? st.host.v_turbo3 : st.v_turbo3, t3b}};
+                    } else if (st.kv_k3v8) {
+                        const int64_t t3b = (int64_t) strata::kernels::kv_turbo3_bytes_per_head((int) qs.head_dim);
+                        a = {{h ? st.host.k_turbo3 : st.k_turbo3, t3b}, {h ? st.host.v_q : st.v_q, kvb},
+                             {h ? st.host.v_scale : st.v_scale, scb}};
                     } else if (st.kv_hybrid) {
                         const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
                         a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q4 : st.v_q4, q4b},
