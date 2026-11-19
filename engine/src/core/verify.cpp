@@ -2289,7 +2289,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         kv_append_turbo3_step(st.k_turbo3, st.v_turbo3, st.page_table, step_t, kc, vc, s, cs, &st.host);
                     else if (st.kv_turbo2)
                         kv_append_turbo2_step(st.k_turbo, st.v_turbo, st.page_table, step_t, kc, vc, s, cs, &st.host);
-                    } else if (st.kv_q4) {
+                    else if (st.kv_q4) {
                         if (m > 1) kv_append_q4_steps(st.k_q4, st.v_q4, st.page_table, step_t, kStepCount, m, kc, vc, s, cs, &st.host);
                         else kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kc, vc, s, cs, &st.host);
                     } else if (st.kv_int8) {
