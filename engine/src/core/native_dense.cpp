@@ -343,7 +343,8 @@ uint64_t NativeDense::bytes_in(int64_t lo, int64_t hi) const {
 }
 
 bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& table, std::string& err,
-                       bool include_ple_key, int64_t layer_lo, int64_t layer_hi) {
+                       bool include_ple_key, int64_t layer_lo, int64_t layer_hi,
+                       const std::vector<std::pair<int64_t, int64_t>>* skip) {
     auto outside = [&](const std::string& name) {   // a blk.<l>. tensor of another stage's layers
         if (layer_hi < 0 || name.rfind("blk.", 0) != 0) return false;
         const long l = std::strtol(name.c_str() + 4, nullptr, 10);
@@ -429,6 +430,11 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             for (const auto& tensor : gguf.tensors()) {
                 if (!eligible(tensor, include_ple_key) || outside(tensor.name)) continue;
                 if (!in_range(tensor.name) && tensor.name.find("ple") == std::string::npos) continue;
+                if (skip != nullptr && tensor.name.rfind("blk.", 0) == 0) {   // layers this engine never runs
+                    const long long l = std::atoll(tensor.name.c_str() + 4);
+                    if (std::any_of(skip->begin(), skip->end(), [l](const auto& r) { return l >= r.first && l < r.second; }))
+                        continue;
+                }
                 if (!seen.insert(tensor.name).second) {
                     err = "native dense: duplicate tensor " + tensor.name; return false;
                 }

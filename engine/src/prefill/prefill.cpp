@@ -60,6 +60,8 @@
 #include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_turbo.hpp"
+#include "strata/kernels/kv_turbo3.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/core/native_head.hpp"
@@ -1760,13 +1762,23 @@ void take_stage(Alloc& o_borrowed, const core::SessionState& ss, const strata::k
     own.owned = o_borrowed.owned;
     Alloc& o = stage_own() ? own : o_borrowed;
     const size_t rows = (size_t) q0.n_pages * s.n_head_kv * s.page_size;
-    if (q0.kv_hybrid) {   // K8V4: the three runs of kKvHybrid; pools_of() then reads as the hybrid pools (mode 3)
+    if (q0.kv_k3v8) {   // k3v8: turbo3 K + int8 V with scales (kv_k3v8.hpp); pools_of() reads it as mode 6
+        st.k_turbo3 = o.take<uint8_t>(rows * strata::kernels::kv_turbo3_bytes_per_head((int) s.head_dim), ok);
+        st.v_q = o.take<int8_t>(rows * s.head_dim, ok);
+        st.v_scale = o.take<uint16_t>(rows * (s.head_dim / 64), ok);
+    } else if (q0.kv_hybrid) {   // K8V4: the three runs of kKvHybrid; pools_of() then reads as the hybrid pools (mode 3)
         st.k_q = o.take<int8_t>(rows * s.head_dim, ok);
         st.k_scale = o.take<uint16_t>(rows * (s.head_dim / 64), ok);
         st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
     } else if (q0.kv_q4) {
         st.k_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
         st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
+    } else if (q0.kv_turbo2) {
+        st.k_turbo = o.take<uint8_t>(rows * strata::kernels::kv_turbo_bytes_per_head((int) s.head_dim), ok);
+        st.v_turbo = o.take<uint8_t>(rows * strata::kernels::kv_turbo_bytes_per_head((int) s.head_dim), ok);
+    } else if (q0.kv_turbo3) {
+        st.k_turbo3 = o.take<uint8_t>(rows * strata::kernels::kv_turbo3_bytes_per_head((int) s.head_dim), ok);
+        st.v_turbo3 = o.take<uint8_t>(rows * strata::kernels::kv_turbo3_bytes_per_head((int) s.head_dim), ok);
     } else if (q0.kv_int8) {
         st.k_q = o.take<int8_t>(rows * s.head_dim, ok);
         st.v_q = o.take<int8_t>(rows * s.head_dim, ok);
@@ -1780,7 +1792,8 @@ void take_stage(Alloc& o_borrowed, const core::SessionState& ss, const strata::k
 strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, const int32_t* table) {
     strata::kernels::QsaAttnPools p;
     p.k_pool = h.k_pool; p.v_pool = h.v_pool; p.k_q = h.k_q; p.v_q = h.v_q; p.k_scale = h.k_scale; p.v_scale = h.v_scale;
-    p.k_q4 = h.k_q4; p.v_q4 = h.v_q4;
+    p.k_q4 = h.k_q4; p.v_q4 = h.v_q4; p.k_turbo = h.k_turbo; p.v_turbo = h.v_turbo;
+    p.k_turbo3 = h.k_turbo3; p.v_turbo3 = h.v_turbo3;
     p.page_table = table;
     return p;
 }
@@ -3010,6 +3023,7 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
     if (st.kv_mode != 0 && !(st.kv_mode == 2 && ring_ok))
         return decline(st.kv_mode == 2 ? "the drafter's K/V is a ring and STRATA_MTP_BATCH_RING=0" : "the drafter's K/V mode is not paged/ring");
     if (st.kv_hybrid) return decline("the drafter's K/V is hybrid (kv_hybrid)");
+    if (st.kv_k3v8) return decline("the drafter's K/V is k3v8 (kv_k3v8)");
     if (mtp.device() != m.device) return decline("the drafter is on another device than this prefill path");
     const auto t0 = Clock::now();
     const core::ModelGeometry& g = *m.g;
@@ -3151,7 +3165,11 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
             strata::kernels::fwht256_inplace_cuda(Kc, nb * g.n_head_kv, m.cs);
             strata::kernels::fwht256_inplace_cuda(Vc, nb * g.n_head_kv, m.cs);
         }
-        if (st.kv_q4) {
+        if (st.kv_turbo3) {
+            strata::kernels::kv_append_turbo3(st.k_turbo3, st.v_turbo3, st.page_table, c0, nb, Kc, Vc, s, m.cs, &st.host);
+        } else if (st.kv_turbo2) {
+            strata::kernels::kv_append_turbo2(st.k_turbo, st.v_turbo, st.page_table, c0, nb, Kc, Vc, s, m.cs, &st.host);
+        } else if (st.kv_q4) {
             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, c0, nb, Kc, Vc, s, m.cs, &st.host);
         } else {
             kv_append(Kc, Vc, nb, c0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
@@ -5293,7 +5311,26 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, m.cs);
                             strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
                         }
-                        if (st.kv_q4)
+                        if (st.kv_k3v8) {   // k3v8: rotated turbo3 K + rotated int8 V (kv_k3v8.hpp); each half writes
+                            // its part of the host copy and the staging pool, the kKvHybrid trick with other formats
+                            const strata::kernels::KvHostPools hk = strata::kernels::kv_k3v8_k_half(st.host),
+                                                               hv = strata::kernels::kv_k3v8_v_half(st.host),
+                                                               sk = strata::kernels::kv_k3v8_k_half(m.stage),
+                                                               sv = strata::kernels::kv_k3v8_v_half(m.stage);
+                            const bool mirror = st.host.present();
+                            strata::kernels::kv_append_turbo3(st.k_turbo3, st.k_turbo3, st.page_table, p0, T, m.Kc, m.Kc, s, m.cs,
+                                                              mirror ? &hk : nullptr, staged ? &sk : nullptr);
+                            kv_append(m.Vc, m.Vc, T, p0, st.page_table, s.page_size, nullptr, nullptr,
+                                      st.v_q, st.v_q, st.v_scale, st.v_scale, m.cs, mirror ? &hv : nullptr,
+                                      staged ? &sv : nullptr);
+                        }
+                        else if (st.kv_turbo3)
+                            strata::kernels::kv_append_turbo3(st.k_turbo3, st.v_turbo3, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
+                                                              host_w, staged ? &m.stage : nullptr);
+                        else if (st.kv_turbo2)
+                            strata::kernels::kv_append_turbo2(st.k_turbo, st.v_turbo, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
+                                                              host_w, staged ? &m.stage : nullptr);
+                        else if (st.kv_q4)
                             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
                                                           host_w, staged ? &m.stage : nullptr);
                         else
@@ -8443,7 +8480,6 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
         return (size_t) depth < sg.stage_ss.size() && sg.stage_ss[(size_t) depth] != nullptr ? sg.stage_ss[(size_t) depth] : m.ss;
     };
     core::SessionState* ssp = ss_of(0);
-    const bool multi = segs.size() > 1;
     int64_t n = 0;                       // all the prompts' tokens
     for (const Seg& sg : segs) n += sg.n;
     const int64_t pos0 = segs[0].pos0;   // (only the progress line's)
@@ -8522,7 +8558,6 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
     auto ple_gather = [&m, &segs, &ss_of, &prev0s, &sub_at](int64_t gi, int buf, std::string& e) -> bool {
         const LmSub& sb = sub_at(gi);
         const int64_t* tokens = segs[(size_t) sb.seg].tokens;
-        core::SessionState* ssq = ss_of((size_t) sb.seg);
         const int64_t c0 = sb.c0, T = sb.T;
         const std::array<int32_t, 2>& prev0 = prev0s[(size_t) sb.seg];
         auto at = [&](int64_t i) { return i < 2 ? prev0[(size_t) i] : (int32_t) tokens[i - 2]; };
@@ -9399,7 +9434,25 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                                 strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, cs);
                                 strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, cs);
                             }
-                            if (st.kv_q4)
+                            if (st.kv_k3v8) {   // k3v8: rotated turbo3 K + rotated int8 V (kv_k3v8.hpp), halves folded
+                            const strata::kernels::KvHostPools hk = strata::kernels::kv_k3v8_k_half(st.host),
+                                                               hv = strata::kernels::kv_k3v8_v_half(st.host),
+                                                               sk = strata::kernels::kv_k3v8_k_half(m.stage),
+                                                               sv = strata::kernels::kv_k3v8_v_half(m.stage);
+                            const bool mirror = st.host.present();
+                            strata::kernels::kv_append_turbo3(st.k_turbo3, st.k_turbo3, st.page_table, p0, T, m.Kc, m.Kc, s, cs,
+                                                              mirror ? &hk : nullptr, staged ? &sk : nullptr);
+                            kv_append(m.Vc, m.Vc, T, p0, st.page_table, s.page_size, nullptr, nullptr,
+                                      st.v_q, st.v_q, st.v_scale, st.v_scale, cs, mirror ? &hv : nullptr,
+                                      staged ? &sv : nullptr);
+                            }
+                            else if (st.kv_turbo3)
+                                strata::kernels::kv_append_turbo3(st.k_turbo3, st.v_turbo3, st.page_table, p0, T, m.Kc, m.Vc, s, cs,
+                                                                  host_w, staged ? &m.stage : nullptr);
+                            else if (st.kv_turbo2)
+                                strata::kernels::kv_append_turbo2(st.k_turbo, st.v_turbo, st.page_table, p0, T, m.Kc, m.Vc, s, cs,
+                                                                  host_w, staged ? &m.stage : nullptr);
+                            else if (st.kv_q4)
                                 strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, cs,
                                                               host_w, staged ? &m.stage : nullptr);
                             else

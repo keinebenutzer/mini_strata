@@ -20,6 +20,7 @@
 #include "strata/core/host_graph_launch.hpp"
 #endif
 #include "strata/core/remote_expert_opt.hpp"
+#include "strata/core/remote_stage.hpp"   // MULTINODE: a stage in another engine
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/spec_prob.hpp"
 #include "strata/core/spec_proposal.hpp"
@@ -51,6 +52,8 @@
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_turbo.hpp"
+#include "strata/kernels/kv_turbo3.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/megakernel.hpp"
@@ -2363,7 +2366,20 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                            kc_b, kc_b, (int) (NKV * HD), n, s, cs, mirror ? &hk : nullptr);
                         kv_append_q4_steps(st.v_q4, st.v_q4, st.page_table, step_b, kStepCount, n, vc_b, vc_b, s, cs,
                                            mirror ? &hv : nullptr);
-                    } else if (st.kv_q4)
+                    } else if (st.kv_k3v8) {   // k3v8: rotated turbo3 K + rotated int8 V (kv_k3v8.hpp), halves folded
+                        const KvHostPools hk = kv_k3v8_k_half(st.host), hv = kv_k3v8_v_half(st.host);
+                        const bool mirror = st.host.present();
+                        kv_append_turbo3_steps(st.k_turbo3, st.k_turbo3, st.page_table, step_b, kStepCount, n, kc_b, kc_b, s, cs,
+                                               mirror ? &hk : nullptr);
+                        kv_append_q8_steps(st.v_q, st.v_q, st.v_scale, st.v_scale, st.page_table, step_b, kStepCount,
+                                           vc_b, vc_b, (int) (NKV * HD), n, s, cs, mirror ? &hv : nullptr);
+                    } else if (st.kv_turbo3)
+                        kv_append_turbo3_steps(st.k_turbo3, st.v_turbo3, st.page_table, step_b, kStepCount, n, kc_b, vc_b, s, cs,
+                                               &st.host);
+                    else if (st.kv_turbo2)
+                        kv_append_turbo2_steps(st.k_turbo, st.v_turbo, st.page_table, step_b, kStepCount, n, kc_b, vc_b, s, cs,
+                                               &st.host);
+                    else if (st.kv_q4)
                         kv_append_q4_steps(st.k_q4, st.v_q4, st.page_table, step_b, kStepCount, n, kc_b, vc_b, s, cs,
                                            &st.host);
                     else if (st.kv_int8)
@@ -2397,7 +2413,18 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                             kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vc, vc, s, cs,
                                               mirror ? &hv : nullptr);
                         }
-                    } else if (st.kv_q4) {
+                    } else if (st.kv_k3v8) {   // k3v8: rotated turbo3 K + rotated int8 V (kv_k3v8.hpp), halves folded
+                        const KvHostPools hk = kv_k3v8_k_half(st.host), hv = kv_k3v8_v_half(st.host);
+                        const bool mirror = st.host.present();
+                        kv_append_turbo3_step(st.k_turbo3, st.k_turbo3, st.page_table, step_t, kc, kc, s, cs,
+                                              mirror ? &hk : nullptr);
+                        kv_append_q8_step(st.v_q, st.v_q, st.v_scale, st.v_scale, st.page_table, step_t, vc, vc, s, cs,
+                                          mirror ? &hv : nullptr);
+                    } else if (st.kv_turbo3)
+                        kv_append_turbo3_step(st.k_turbo3, st.v_turbo3, st.page_table, step_t, kc, vc, s, cs, &st.host);
+                    else if (st.kv_turbo2)
+                        kv_append_turbo2_step(st.k_turbo, st.v_turbo, st.page_table, step_t, kc, vc, s, cs, &st.host);
+                    else if (st.kv_q4) {
                         if (m > 1) kv_append_q4_steps(st.k_q4, st.v_q4, st.page_table, step_t, kStepCount, m, kc, vc, s, cs, &st.host);
                         else kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kc, vc, s, cs, &st.host);
                     } else if (st.kv_int8) {
@@ -3775,6 +3802,17 @@ static inline void metal_fold_nf(uint32_t nf_mask, uint32_t scan, int T, const i
 
 bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out,
                    std::string& err) {
+    if (remote_ != nullptr) {   // MULTINODE: the stage runs in another engine; its hand-off comes back over the link
+        if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
+        // STRATA_MN_GAP_MS=N (a test knob): wait N ms before each window, to see what an idle gap does to the stage
+        static const int gap_ms = [] { const char* e = std::getenv("STRATA_MN_GAP_MS"); return e ? std::atoi(e) : 0; }();
+        if (gap_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(gap_ms));
+        if (!remote_->window(T, pos0, tokens, rin_, rout_, err)) return false;
+        last_t_ = T;
+        last_pos0_ = pos0;
+        ++windows;
+        return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
+    }
     const bool measure = spec_measure_;
     // Clear this borrow and propagated stage borrows on every exit.
     struct ProposalBorrow {
@@ -4525,6 +4563,11 @@ namespace { bool g_commit_async = false; }
 void Verifier::set_commit_async(bool on) { g_commit_async = on && std::getenv("STRATA_COMMIT_SYNC") == nullptr; }
 
 bool Verifier::commit(int n_keep, std::string& err) {
+    if (remote_ != nullptr) {   // MULTINODE: the stage commits its own layers' state
+        if (n_keep < 1 || n_keep > last_t_) { err = "verify: commit count out of range"; return false; }
+        if (!remote_->commit(n_keep, err)) return false;
+        return next_ == nullptr || next_->commit(n_keep, err);
+    }
 #if defined(STRATA_GPU_METAL)
     return strata::metal_engine::window_commit(metal_, n_keep, err);
 #endif

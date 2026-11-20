@@ -1062,6 +1062,9 @@ class ContextScreen(Base):
         kv = self.kv()
         label = {"int8": "8-bit (recommended: what the published numbers were measured with)",
                  "q4_0": "4-bit (half the memory, a little less precise on long documents)",
+                 "turbo2": "2-bit (Hadamard-rotated: a quarter of the memory, the leanest the engine offers)",
+                 "turbo3": "3-bit (Hadamard-rotated: quality between turbo2 and 4-bit)",
+                 "k3v8": "asymmetric: 3-bit rotated keys + 8-bit values (more accurate than 4-bit, leaner than k8v4)",
                  "k8v4": "mixed 8-bit and 4-bit", "fp16": "full precision"}.get(kv, kv)
         small = (s.context or 0) <= 8192
         self.query_one("#kvline", Static).update(Text(
@@ -1087,7 +1090,7 @@ class ContextScreen(Base):
             self.build()
             self.paint()
             return
-        order = ["int8", "q4_0"]
+        order = ["int8", "q4_0", "turbo3", "k3v8", "turbo2"]
         cur = s.kv or "int8"
         s.kv = order[(order.index(cur) + 1) % len(order)] if cur in order else "int8"
         self.build()

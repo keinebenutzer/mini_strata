@@ -45,6 +45,7 @@
 #include "strata/core/run_manifest.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
+#include "strata/core/remote_stage.hpp"   // MULTINODE: a layer-split stage on another PC
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/conversation_snapshot.hpp"
@@ -99,6 +100,8 @@
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_turbo.hpp"
+#include "strata/kernels/kv_turbo3.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/core/spill_gate.hpp"
@@ -1071,6 +1074,16 @@ struct Options {
     /// the later stages' devices "D1,D2,.." (default: the next visible GPUs; "0" with one K: both stages on this
     /// GPU, sharing everything - the bit-exact A/B of the hand-off)
     std::string split_device;
+    /// MULTINODE --remote-stage HOST:PORT[,HOST:PORT..] (with --layer-split K1,K2): layers [K1, K2) run in a stage
+    /// engine on another PC (`--stage-listen`); this engine runs [0, K1) and [K2, end) on CUDA0, sharing one session.
+    /// "local" runs the middle stage in THIS engine on CUDA0 (the A/B that tells a three-stage chain from a stage PC).
+    std::string remote_stage;
+    /// MULTINODE --stage-listen PORT --stage-layers K1,K2: this engine is that stage; it serves windows over TCP
+    /// from the addresses in --stage-allow (default 127.0.0.1) instead of reading requests from stdin.  Every
+    /// expert of its layers must be in VRAM (no CPU experts): it refuses to start otherwise.
+    int stage_listen = 0;
+    std::string stage_layers;
+    std::string stage_allow = "127.0.0.1";
     /// --split-skip-if-fits (opt-in; the server passes it for a config's "split_skip_if_fits"): with
     /// --layer-split auto, run on CUDA0 alone when it holds every profiled expert pair plus the whole session (KV),
     /// the drafter and the reserve - a split then only adds hand-offs (two RDNA4 cards: 1,384 vs 1,794 tok/s at 4K)
@@ -1228,6 +1241,12 @@ void usage() {
                  "                       VRAM; default fp16 until gate G-C accepts int8\n"
                  "  --kv q4_0            4-bit K/V after a Hadamard rotation (PR #21): half of int8's memory,\n"
                  "                       slightly lower precision (see bench/results/2026-09-27-kv-q4)\n"
+                 "  --kv turbo2          2-bit K/V after the same Hadamard rotation: 320 B per cell (vs 576 in\n"
+                 "                       q4_0); the same rotation sites, a coarser quantizer\n"
+                 "  --kv turbo3          3-bit K/V after the same Hadamard rotation: 448 B per cell (vs 320 in\n"
+                 "                       turbo2, 576 in q4_0); 8 uniform levels, 14-byte blocks\n"
+                 "  --kv k3v8            asymmetric: rotated turbo3 K + rotated INT8 V (llama.cpp's -ctk turbo3\n"
+                 "                       -ctv q8_0 idea): 752 B per cell (vs 448 turbo3, 816 k8v4); streams too\n"
                  "  --kv k8v4            hybrid: INT8 K (exact attention scores) + rotated Q4_0 V, 816 B/cell\n"
                  "                       (vs int8's 1,056); streams with --kv-resident too\n"
                  "  --kv-resident N      KV streaming: keep N cells of each QSA layer in VRAM (min 20480) and the\n"
@@ -1324,6 +1343,23 @@ void usage() {
                  "                       with the GPUs overlapped - 1 = the prompt's short reads, 2 = decode as well\n"
                  "                       (stage 0 runs the next window while stage 1 verifies this one); docs/MULTI_GPU.md\n"
                  "  --trim-stage-weights a layer split (the default): each GPU loads only its own layers' dense weights\n"
+                 "  --remote-stage HOST:PORT[,HOST:PORT..]  --serve with --layer-split K1,..,Kn+1: the later stages run\n"
+                 "                       on OTHER PCs (each answers with --stage-listen/--stage-layers).  The head keeps\n"
+                 "                       [0, K1), KV and the cache, reads its prompts through the verify windows and\n"
+                 "                       sends every window plus the hand-off over TCP (lockstep, frame protocol\n"
+                 "                       Hello/Window/Commit/Reset).  'local' runs the middle stage in this engine on\n"
+                 "                       CUDA0 - the single-PC A/B.  What it buys: the model's VRAM need spreads over\n"
+                 "                       several PCs, so a card holds only its layers' experts and the rest lands on\n"
+                 "                       the stage PC's card (docs: patch repo README)\n"
+                 "  --stage-listen PORT  --serve AS a stage engine: serve one head's --remote-stage instead of serving\n"
+                 "                       clients; loads only --stage-layers' weights, carves only its session range,\n"
+                 "                       skips PLE and the native head, and refuses unless every expert of its layers\n"
+                 "                       sits in VRAM\n"
+                 "  --stage-layers K1,K2  the layers [K1, K2) this stage engine runs: K1 and K2 are two bounds of the\n"
+                 "                       head's --layer-split\n"
+                 "  --stage-allow IP     --stage-listen: which address may connect (default 127.0.0.1).  Test knobs:\n"
+                 "                       STRATA_MN_GAP_MS pauses each window, STRATA_MN_ADAPT=1 keeps the head's adaptive\n"
+                 "                       swaps over its own layers\n"
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
                  "  --prompt-cache-tail  --serve, single GPU: one extra checkpoint near the prompt's end, at an existing\n"
                  "                       chunk boundary (default off; requires --prompt-cache and --prompt-cache-every > 0)\n"
@@ -4059,6 +4095,10 @@ int main(int argc, char** argv) {
         else if (a == "--spec-split") o.spec_split = true;
         else if (a == "--layer-split") o.layer_split = next("--layer-split");
         else if (a == "--split-device") o.split_device = next("--split-device");
+        else if (a == "--remote-stage") o.remote_stage = next("--remote-stage");
+        else if (a == "--stage-listen") o.stage_listen = std::atoi(next("--stage-listen"));
+        else if (a == "--stage-layers") o.stage_layers = next("--stage-layers");
+        else if (a == "--stage-allow") o.stage_allow = next("--stage-allow");
         else if (a == "--split-skip-if-fits") o.split_skip_if_fits = true;
         else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
         else if (a == "--serve") { o.serve = true; strata::core::set_serve_error_line(true); }   // #6054: a check that fails ends at once, with an ERR line
@@ -4766,6 +4806,52 @@ int main(int argc, char** argv) {
         return n > 0 ? n : 0;
     }();
     strata::core::set_primary_device(primary_device);
+    /// MULTINODE --stage-layers K1,K2: the layers a stage engine runs (set once, while the options are checked)
+    static int64_t g_stage_lb = 0, g_stage_le = 0;
+    // MULTINODE (first version): the remote stage's state moves only through verify windows, commits and resets.
+    // So the prompt is read through the windows (no batched prompt path), nothing is checkpointed or parked (a
+    // restore would not reach the stage), and the expert set stays fixed (no adaptive swaps: on the stage they would
+    // evict the experts that keep it off the CPU; on the head they would make the A/B runs differ).
+    const bool remote_head = !o.remote_stage.empty(), stage_mode = o.stage_listen > 0;
+    if (remote_head || stage_mode) {
+        if (!o.serve) { std::fprintf(stderr, "strata generate: --remote-stage / --stage-listen need --serve\n"); return 2; }
+        if (remote_head && stage_mode) {
+            std::fprintf(stderr, "strata generate: --remote-stage and --stage-listen are the two ends: use one\n");
+            return 2;
+        }
+        if (stage_mode && !o.layer_split.empty()) {
+            std::fprintf(stderr, "strata generate: a stage engine (--stage-listen) takes --stage-layers, not --layer-split\n");
+            return 2;
+        }
+        if (stage_mode) {
+            long long a = 0, b = 0;
+            char tail = 0;
+            if (std::sscanf(o.stage_layers.c_str(), "%lld,%lld%c", &a, &b, &tail) != 2 || a < 2 || b <= a) {
+                std::fprintf(stderr, "strata generate: --stage-listen needs --stage-layers K1,K2 (2 <= K1 < K2): the "
+                                     "layers [K1, K2) the head's --layer-split K1,K2 gives it\n");
+                return 2;
+            }
+            g_stage_lb = a;
+            g_stage_le = b;
+        }
+        o.prompt_cache = 0;
+        o.conversation_cache_mib = 0;
+        o.short_read = INT64_MAX / 4;
+        // STRATA_MN_ADAPT=1: the head keeps the adaptive tier over its own layers (the stage's layers are never
+        // routed here, so never swapped)
+        if (std::getenv("STRATA_MN_ADAPT") == nullptr) o.adapt_swaps = 0;
+        if (stage_mode) {   // every expert of a stage is on its GPU: the CPU pool has nothing to do, so keep it small
+            if (o.pool_workers <= 0) o.pool_workers = 1;   // and asleep (its spinning only heats the stage PC's CPU)
+            if (std::getenv("STRATA_POOL_SPIN_US") == nullptr)
+#if defined(_WIN32)
+                _putenv("STRATA_POOL_SPIN_US=0");
+#else
+                setenv("STRATA_POOL_SPIN_US", "0", 1);
+#endif
+        }
+        std::fprintf(stderr, "strata serve: multinode %s: prompts read through the verify windows, no prompt cache, "
+                             "no adaptive swaps\n", remote_head ? "head" : "stage");
+    }
     // parking with --layer-split saves every stage (SavedConversation::stage_images)
     // Layer split (multi-GPU): the later stages run layers [K_i, K_i+1) on their own GPUs (--split-device, default
     // the next visible ones); "auto" places the K from each GPU's free VRAM once the weights are in (below).  KV
@@ -4797,7 +4883,18 @@ int main(int argc, char** argv) {
         };
         split_auto = o.layer_split == "auto";
         bool ok = o.serve && (split_auto || ints(o.layer_split, split_at));
-        if (ok && !o.split_device.empty()) ok = ints(o.split_device, split_devs);
+        if (remote_head) {   // MULTINODE: [0,K1) here, [K1,K2) on the first stage engine, ... [Kn,end) here
+            const size_t n_remote = 1 + (size_t) std::count(o.remote_stage.begin(), o.remote_stage.end(), ',');
+            ok = ok && !split_auto && o.split_device.empty() && split_at.size() == n_remote + 1 && split_at[0] >= 2;
+            for (size_t i = 1; ok && i < split_at.size(); ++i) ok = split_at[i] > split_at[i - 1];
+            if (!ok) {
+                std::fprintf(stderr, "strata generate: --remote-stage A[,B..] needs --layer-split K1,..,Kn+1 (rising "
+                                     "from 2; stage engine i runs [Ki, Ki+1)) and no --split-device\n");
+                return 2;
+            }
+            split_devs = {0};
+            split_same = true;
+        } else if (ok && !o.split_device.empty()) ok = ints(o.split_device, split_devs);
         else if (ok)
             for (int d = 1; d < n_dev && (split_auto || split_devs.size() < split_at.size()); ++d) split_devs.push_back(d);
         if (ok && !split_auto && split_devs.empty() && split_at.size() == 1) split_devs.push_back(0);   // one GPU
@@ -4833,7 +4930,8 @@ int main(int argc, char** argv) {
             o.layer_split.clear();
             split_auto = false;
         } else if (ok) {
-            ok = (split_auto || split_at.size() == split_devs.size()) && split_devs.size() < (size_t) SplitDrive::kMax;
+            ok = (split_auto || remote_head || split_at.size() == split_devs.size()) &&
+                 split_devs.size() < (size_t) SplitDrive::kMax;
             for (size_t i = 0; ok && i < split_at.size(); ++i) ok = split_at[i] >= 2 && (i == 0 || split_at[i] > split_at[i - 1]);
             for (size_t i = 0; ok && !split_same && i < split_devs.size(); ++i) {
                 ok = split_devs[i] > 0 && split_devs[i] < n_dev;
@@ -5007,18 +5105,21 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (o.kv == "q4") o.kv = "q4_0";
-    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "k8v4") {
-        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0 or k8v4\n");
+    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "turbo2" && o.kv != "turbo3" && o.kv != "k3v8" && o.kv != "k8v4") {
+        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0, turbo2, turbo3, k3v8 or k8v4\n");
         return 2;
     }
     strata::core::qsa_set_kv_int8(o.kv == "int8");
     strata::core::qsa_set_kv_q4(o.kv == "q4_0");   // PR #21: 4-bit codes after a Hadamard rotation (kv_q4.hpp)
+    strata::core::qsa_set_kv_turbo2(o.kv == "turbo2");   // 2-bit codes on the same rotation (kv_turbo.hpp)
+    strata::core::qsa_set_kv_turbo3(o.kv == "turbo3");   // 3-bit codes on the same rotation (kv_turbo3.hpp)
     // STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation --kv q4_0 already uses. Opt-in: first-token KL to
     // fp16 K/V improved on an NVFP4 pack (0.0066 -> 0.0051) but not on IQ2_XS (0.0022 -> 0.0054)
     const char* kv_rot = std::getenv("STRATA_KV_ROT");
     strata::core::qsa_set_kv_int8_rotate(kv_rot != nullptr && kv_rot[0] == '1');
     if (kv_rot != nullptr && kv_rot[0] == '1' && o.kv == "int8")
         std::fprintf(stderr, "strata generate: STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation (opt-in)\n");
+    strata::core::qsa_set_kv_k3v8(o.kv == "k3v8");     // k3v8: rotated turbo3 K + rotated INT8 V, 752 B/cell
     strata::core::qsa_set_kv_hybrid(o.kv == "k8v4");   // K8V4: INT8 K + rotated Q4_0 V, 816 B/cell
     if (o.kv_resident < 0) {
         std::fprintf(stderr, "strata generate: --kv-resident must be >= 0\n");
@@ -5791,6 +5892,23 @@ int main(int argc, char** argv) {
             return 1;
         }
         if (native_pack) skip.insert("token_embd.weight");
+        if (stage_mode) {   // MULTINODE: a stage engine keeps only its own layers' weights in VRAM
+            std::ifstream idx(o.pack + "/index.txt");
+            std::string line;
+            size_t before = skip.size();
+            while (std::getline(idx, line)) {
+                if (line.empty() || line[0] == '#') continue;
+                const std::string name = line.substr(0, line.find(' '));
+                if (name.rfind("blk.", 0) == 0) {
+                    const long long l = std::atoll(name.c_str() + 4);
+                    if (l < g_stage_lb || l >= g_stage_le) skip.insert(name);
+                } else {   // the head, embedding and output mixers (output.weight's row still gives n_vocab)
+                    skip.insert(name);
+                }
+            }
+            std::fprintf(stderr, "strata stage: %zu more tensors left out (layers outside %lld-%lld, the head)\n",
+                         skip.size() - before, (long long) g_stage_lb, (long long) (g_stage_le - 1));
+        }
         // STRATA_HC_Q8=1 (single GPU): the layers' hyper-connection down / up projections live only as Q8_0 (NativeDense
         // quantizes them from the pack file), so their bf16 copy is not loaded
         if (!o.native_dense_gguf.empty() && !multi_gpu && strata::core::NativeDense::hc_q8_requested())
@@ -6031,7 +6149,14 @@ int main(int argc, char** argv) {
 
     strata::core::NativeDense native_dense;
     if (!o.native_dense_gguf.empty()) {
-        if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key)) {
+        // MULTINODE: a stage loads only its own layers' projections; a head leaves its remote stages' range out.
+        // --remote-stage local is the exception: that stage runs in THIS engine, so its projections stay loaded.
+        std::vector<std::pair<int64_t, int64_t>> never_run;
+        if (remote_head && split_at.size() >= 2 && o.remote_stage != "local")
+            never_run.push_back({split_at.front(), split_at.back()});
+        if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key,
+                               stage_mode ? g_stage_lb : 0, stage_mode ? g_stage_le : -1,
+                               never_run.empty() ? nullptr : &never_run)) {
             std::fprintf(stderr, "strata generate: native dense projections: %s\n", err.c_str());
             return 1;
         }
@@ -6758,6 +6883,19 @@ int main(int argc, char** argv) {
         }
         std::fprintf(stderr, "strata generate: profile %s: %zu ranked pairs, built for %lld slots\n",
                      o.expert_profile.c_str(), profile.size(), (long long) pslots);
+        // MULTINODE: each engine's VRAM cache and RAM tier hold only the layers it runs - the stage [K1, K2),
+        // the head the rest (its remote range is the stage engines'). --remote-stage local runs the stage here,
+        // so this engine runs every layer and keeps the whole profile.
+        if (stage_mode || (remote_head && !split_at.empty() && o.remote_stage != "local")) {
+            const int64_t lo = stage_mode ? g_stage_lb : split_at.front(), hi = stage_mode ? g_stage_le : split_at.back();
+            std::vector<std::pair<int32_t, int32_t>> mine;
+            for (const auto& pr : profile)
+                if ((pr.first >= lo && pr.first < hi) == stage_mode) mine.push_back(pr);
+            std::fprintf(stderr, "strata generate: multinode: the profile cut to this engine's layers (%s %lld-%lld): "
+                                 "%zu of %zu pairs\n", stage_mode ? "only" : "all but", (long long) lo, (long long) (hi - 1),
+                         mine.size(), profile.size());
+            profile.swap(mine);
+        }
     }
     // #477: the whole ranking as loaded, the prior of --expert-profile-save's order (a layer split keeps only
     // CUDA0's pairs in `profile` below).  Empty without --expert-profile-save.
@@ -7107,7 +7245,7 @@ int main(int argc, char** argv) {
         //
         // chunk_bytes uses a no-alloc fake SessionState.  qsa_state_init is NOT used: with base=nullptr it would
         // cudaMemcpy a null page table and kv_stream_reset a null map (CUDA "invalid argument") on a streamed
-        // state.  bytes_needed only reads max_cells and kv_mode/n_pages/kv_int8/kv_q4/kv_hybrid, so we set those
+        // state.  bytes_needed only reads max_cells and kv_mode/n_pages/kv_int8/kv_q4/kv_hybrid/kv_k3v8/kv_turbo2/kv_turbo3, so we set those
         // fields directly, replicating kv_plan's arithmetic (layer.cpp:634) with the public getters.
         auto chunk_bytes = [&](int64_t lb, int64_t c) -> uint64_t {
             strata::core::qsa_set_kv_resident(o.kv_resident);
@@ -7120,8 +7258,11 @@ int main(int argc, char** argv) {
                 if (r < pages) mode = 1;
             }
             const bool q4 = strata::core::qsa_kv_q4();
+            const bool tb2 = strata::core::qsa_kv_turbo2();
+            const bool tb3 = strata::core::qsa_kv_turbo3();
             const bool hyb = strata::core::qsa_kv_hybrid();
-            const bool i8 = strata::core::qsa_kv_int8() && !q4;
+            const bool k38 = strata::core::qsa_kv_k3v8();
+            const bool i8 = strata::core::qsa_kv_int8() && !q4 && !tb2 && !tb3;
             std::vector<strata::core::QsaState> qs((size_t) g.n_qsa_layers());
             for (int64_t j = 0; j < g.n_qsa_layers(); ++j) {
                 qs[(size_t) j].max_cells = o.max_context;
@@ -7129,7 +7270,10 @@ int main(int argc, char** argv) {
                 qs[(size_t) j].n_pages = pages;
                 qs[(size_t) j].kv_int8 = i8;
                 qs[(size_t) j].kv_q4 = q4;
+                qs[(size_t) j].kv_turbo2 = tb2;
+                qs[(size_t) j].kv_turbo3 = tb3;
                 qs[(size_t) j].kv_hybrid = hyb;
+                qs[(size_t) j].kv_k3v8 = k38;
             }
             strata::core::SessionState ss{};
             ss.max_cells = o.max_context;
@@ -7640,7 +7784,8 @@ int main(int argc, char** argv) {
     // fixed in llama.cpp: allocation sized by the whole model instead of the device's own work.
     {
         const strata::core::OnDevice on0(primary_device);   // STRATA_PRIMARY_DEVICE (upstream: a literal 0)
-        const int64_t hi0 = multi_gpu ? split_at[0] : -1;
+        const int64_t hi0 = multi_gpu ? split_at[0] : stage_mode ? g_stage_le : -1;
+        const int64_t lo0 = stage_mode ? g_stage_lb : 0;   // MULTINODE: a stage carves only its own layers
         // the elastic K/V (--kv-grow, see kvg_ensure): one GPU, the whole K/V in VRAM (no streaming), a profiled cache
         // that can give slots up, and every expert in RAM for the CPU to compute the ones it gives up
         {
@@ -7660,11 +7805,11 @@ int main(int argc, char** argv) {
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
             strata::core::ExpertCache::set_vmm(on);
         }
-        if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, hi0)) != cudaSuccess) {
+        if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, lo0, hi0)) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: session state allocation failed\n");
             return 1;
         }
-        if (strata::core::session_init(g, o.max_context, K, sbuf, ss, 0, hi0) == 0) {
+        if (strata::core::session_init(g, o.max_context, K, sbuf, ss, lo0, hi0) == 0) {
             std::fprintf(stderr, "strata generate: session_init failed\n");
             return 1;
         }
@@ -7682,7 +7827,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: zeroing the session state failed\n");
             return 1;
         }
-        if (!o.ple_gguf.empty()) {
+        if (!o.ple_gguf.empty() && !(stage_mode && g_stage_lb > 1)) {   // a stage without layer 1 runs no PLE
             if (!ss.ple.ready()) {
                 std::fprintf(stderr, "strata generate: the PLE run is not ready after construction\n");
                 return 1;
@@ -8318,7 +8463,7 @@ int main(int argc, char** argv) {
     if (wo == nullptr) { std::fprintf(stderr, "strata generate: output.weight is missing\n"); return 1; }
     const int64_t n_vocab = wo->ne1;
     strata::core::NativeHead native_head;
-    if (!o.native_head_gguf.empty() && !multi_gpu) {   // a layer split's head is on its last stage
+    if (!o.native_head_gguf.empty() && !multi_gpu && !stage_mode) {   // a layer split's head is on its last stage (MULTINODE: on the head engine)
         const auto head_t0 = std::chrono::steady_clock::now();
         if (!native_head.load(o.native_head_shards, g.n_embd, n_vocab, err, o.peer_device)) {
             std::fprintf(stderr, "strata generate: %s%s%s\n", err.c_str(), vram_free_note().c_str(), vram_batch_hint(err, o.batch).c_str());
@@ -9372,7 +9517,6 @@ int main(int argc, char** argv) {
     uint64_t per_layer_bytes = 0;
     if (native_pack && o.expert_cache > 0 && o.expert_cache_per_layer) {
         const size_t free_b = strata::core::device_free_bytes();   // the same reading the shared-cache sizing uses
-        const auto& lay = strata::kernels::cpu::expert_layout();
         const int asked = o.expert_cache;
         const uint64_t budget = (uint64_t) asked * nibble_max_slot_bytes();
         size_t free_room = free_b > ((size_t) o.vram_reserve_mib << 20) ? free_b - ((size_t) o.vram_reserve_mib << 20) : 0;
@@ -9398,7 +9542,6 @@ int main(int argc, char** argv) {
     } else if (native_pack && o.expert_cache > 0 && !profile.empty()) {
         size_t free_b = 0, total_b = 0;
         free_b = strata::core::device_free_bytes(); (void) total_b;
-        const auto& lay = strata::kernels::cpu::expert_layout();
         // what the uniform sizing granted, in the 256-byte slots the loop below counts: the blob formats of 1280 / 2560
         // rows are whole multiples of 256 already; an NVFP4 blob's 16-byte scale tail is not, and the unrounded budget
         // held one slot fewer than asked (--expert-cache 1: none)
@@ -9532,7 +9675,6 @@ int main(int argc, char** argv) {
             if (keep_bytes <= 0) { o.expert_cache = 0; sized_slots.clear(); return false; }
             if (per_layer_bytes > 0) {
                 // Cutting the list short would put one layer's blob in the next layer's range.
-                const auto& lay = strata::kernels::cpu::expert_layout();
                 int64_t q = keep_bytes / (int64_t) per_layer_bytes;
                 if (q > g.n_expert) q = g.n_expert;
                 sized_slots.clear();
@@ -13169,8 +13311,27 @@ int main(int argc, char** argv) {
         // last runs the head.  The hand-offs are mapped pinned memory, portable: a stage on another GPU reads it.
         // (--split-device 0: the second stage on this GPU, sharing its weights, session and cache - the A/B.)
         strata::core::Verifier ver_same;
+        // MULTINODE --remote-stage: stage 1 is a proxy for the stage engine, stage 2 is `ver_same` on CUDA0
+        // (several stage engines in a row: --remote-stage A,B with --layer-split K1,K2,K3)
+        std::vector<std::string> remote_addrs;
+        for (size_t a = 0; remote_head && a <= o.remote_stage.size();) {
+            const size_t b = std::min(o.remote_stage.find(',', a), o.remote_stage.size());
+            remote_addrs.push_back(o.remote_stage.substr(a, b - a));
+            a = b + 1;
+        }
+        const int n_remote = (int) remote_addrs.size();
+        std::vector<std::unique_ptr<strata::core::Verifier>> ver_remotes;
+        std::vector<std::unique_ptr<strata::core::StageLink>> stage_links;
+        for (int r = 0; r < n_remote; ++r) {
+            ver_remotes.push_back(std::make_unique<strata::core::Verifier>());
+            stage_links.push_back(std::make_unique<strata::core::StageLink>());
+        }
+        // --remote-stage local: the middle stage in THIS engine on CUDA0 (sharing everything) - the A/B that tells the
+        // three-stage chain apart from the stage engine
+        const bool remote_local = n_remote == 1 && remote_addrs[0] == "local";
         SplitDrive split_drive;
         auto stage_ver = [&](int st) -> strata::core::Verifier& {
+            if (remote_head && st > 0) return st <= n_remote ? *ver_remotes[(size_t) st - 1] : ver_same;
             return st == 0 ? ver : split_same ? ver_same : stages[(size_t) st - 1]->ver;
         };
         auto pcie_num_of = [](double f) { return std::max(0, std::min(256, (int) (f * 256.0 + 0.5))); };
@@ -13221,7 +13382,7 @@ int main(int argc, char** argv) {
                                                          std::min<int>(o.batch, strata::kernels::kVerifyMaxT))
                                          : strata::kernels::kVerifyNarrowT;
             const size_t hb = (size_t) hrows * (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
-            std::vector<float*> hand((size_t) n_stages - 1, nullptr);
+            std::vector<float*> hand((size_t) n_stages - 1, nullptr), hand_host((size_t) n_stages - 1, nullptr);
             for (size_t si = 0; si < hand.size(); ++si) {
                 float*& h = hand[si];
                 const int dev_from = si == 0 ? strata::core::primary_device() : stages[si - 1]->dev;
@@ -13267,6 +13428,29 @@ int main(int argc, char** argv) {
                         return 1;
                     }
                     std::memset(hh, 0, hb);
+                    hand_host[si] = hh;   // MULTINODE: the link reads and writes the host side of the hand-off
+                }
+            }
+            if (remote_head && split_at.back() >= g.n_layers) {
+                std::fprintf(stderr, "strata serve: --remote-stage: the last K must be below %lld\n", (long long) g.n_layers);
+                return 2;
+            }
+            if (remote_head && remote_local) {
+                std::fprintf(stderr, "strata serve: multinode: --remote-stage local (the middle stage in this engine)\n");
+            } else if (remote_head) {
+                for (int r = 0; r < n_remote; ++r) {
+                    strata::core::StageHello want;
+                    want.lb = split_at[(size_t) r];
+                    want.le = split_at[(size_t) r + 1];
+                    want.hf = strata::core::Verifier::handoff_floats(g);
+                    want.max_t = o.spec;
+                    if (!stage_links[(size_t) r]->connect(remote_addrs[(size_t) r], want, err)) {
+                        std::fprintf(stderr, "strata serve: --remote-stage %s: %s\n", remote_addrs[(size_t) r].c_str(),
+                                     err.c_str());
+                        return 1;
+                    }
+                    std::fprintf(stderr, "strata serve: multinode: the stage engine at %s runs layers %lld-%lld\n",
+                                 remote_addrs[(size_t) r].c_str(), (long long) want.lb, (long long) (want.le - 1));
                 }
             }
             // STRATA_SPLIT_OVERLAP=1 (opt-in; measured on 2x RX 7900 XTX only): a ready word per hand-off, raised by the
@@ -13313,7 +13497,13 @@ int main(int argc, char** argv) {
             }
             for (int st = 1; st < n_stages; ++st) {
                 bool ok_s = false;
-                if (split_same) {
+                if (remote_head && st == 1 && remote_local) {
+                    ok_s = ver_remotes[0]->init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err);
+                } else if (remote_head && st <= n_remote) {
+                    ver_remotes[(size_t) st - 1]->set_remote(stage_links[(size_t) st - 1].get(), &g,
+                                                             hand_host[(size_t) st - 1], hand_host[(size_t) st], o.spec);
+                    ok_s = true;
+                } else if (split_same) {
                     ok_s = ver_same.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, std::max(o.spec, std::min(o.batch, (int) strata::kernels::kVerifyMaxT)), err);
                 } else {
                     GpuStage& gs = *stages[(size_t) st - 1];
@@ -13345,9 +13535,33 @@ int main(int argc, char** argv) {
             std::string plan_s = "0-" + std::to_string(split_at[0] - 1) + " (CUDA0)";
             for (int st = 1; st < n_stages; ++st)
                 plan_s += ", " + std::to_string(split_at[(size_t) st - 1]) + "-" + std::to_string(split_drive.end[st] - 1) +
-                          " (CUDA" + std::to_string(split_same ? 0 : stages[(size_t) st - 1]->dev) + ")";
+                          (remote_head && st <= n_remote ? " (" + remote_addrs[(size_t) st - 1] + ")"
+                                                  : " (CUDA" + std::to_string(split_same ? 0 : stages[(size_t) st - 1]->dev) + ")");
             std::fprintf(stderr, "strata serve: layer split: layers %s, one hand-off per window%s\n", plan_s.c_str(),
                          overlap ? " (overlapped: STRATA_SPLIT_OVERLAP=1)" : "");
+        }
+        // MULTINODE --stage-listen: `ver` runs only [K1, K2), from a hand-off the head sends to one it sends back
+        float* stage_in_host = nullptr;
+        float* stage_out_host = nullptr;
+        if (stage_mode) {
+            if (g_stage_le >= g.n_layers) {   // the last layers, the head and the drafter stay on the head engine
+                std::fprintf(stderr, "strata serve: --stage-layers: K2 must be below %lld\n", (long long) g.n_layers);
+                return 2;
+            }
+            const size_t hb = (size_t) strata::kernels::kVerifyMaxT *
+                              (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
+            float* dev_in = nullptr;
+            float* dev_out = nullptr;
+            if (cudaHostAlloc((void**) &stage_in_host, hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+                cudaHostAlloc((void**) &stage_out_host, hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+                cudaHostGetDevicePointer((void**) &dev_in, stage_in_host, 0) != cudaSuccess ||
+                cudaHostGetDevicePointer((void**) &dev_out, stage_out_host, 0) != cudaSuccess) {
+                std::fprintf(stderr, "strata serve: the stage's hand-off allocation failed\n");
+                return 1;
+            }
+            std::memset(stage_in_host, 0, hb);
+            std::memset(stage_out_host, 0, hb);
+            ver.set_stage(g_stage_lb, g_stage_le, dev_in, dev_out);
         }
         // --pipeline-windows: the odd windows' verifiers and their hand-off (initialized before `ver`, which stays the
         // watchdog's verifier), and the drafter's own row buffer, which either parity's rows are copied into
@@ -13626,6 +13840,126 @@ int main(int argc, char** argv) {
         // issue #31's thread dumps show the host stuck in that cudaMemcpyAsync on a driver lock for good.  The copy
         // kernel needs no host CUDA call there, and costs ~1-3% decode on IQ3_S (45.3 -> 44.8 tok/s, 8 requests).
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
+        if (stage_mode) {
+            // ---- MULTINODE: the stage engine.  Every expert of [K1, K2) must sit in the VRAM cache: this engine never
+            // computes an expert on the CPU (the user's rule for the stage PC: VRAM only, no RAM for experts).
+            // The pool publishes each layer's GPU plan (its VRAM hits) into the verifier's sink - the serve loop below
+            // wires it the same way; without it every layer's plan is empty and the resident experts are skipped.
+            drive.d.plan = ver.plan_sink();
+            drive.d.pcie_num = std::max(0, std::min(256, (int) (o.pcie_frac * 256.0 + 0.5)));
+            int64_t missing = 0;
+            for (int64_t l = g_stage_lb; l < g_stage_le; ++l)
+                for (int64_t e = 0; e < g.n_expert; ++e) missing += xcache.slot_of(l, e) < 0;
+            if (missing > 0) {
+                std::fprintf(stderr, "strata stage: %lld experts of layers %lld-%lld are not in VRAM (the cache holds %lld "
+                                     "slots): give the stage fewer layers, or a profile that ranks these layers first\n",
+                             (long long) missing, (long long) g_stage_lb, (long long) (g_stage_le - 1),
+                             (long long) xcache.slots());
+                return 1;
+            }
+            const int64_t hf = strata::core::Verifier::handoff_floats(g);
+            strata::core::StageListener lis;
+            if (!lis.listen(o.stage_listen, o.stage_allow, err)) {
+                std::fprintf(stderr, "strata stage: %s\n", err.c_str());
+                return 1;
+            }
+            std::fprintf(stderr, "strata stage: layers %lld-%lld, all %lld of their experts in VRAM; listening on port %d "
+                                 "(from %s)\n", (long long) g_stage_lb, (long long) (g_stage_le - 1),
+                         (long long) ((g_stage_le - g_stage_lb) * g.n_expert), o.stage_listen, o.stage_allow.c_str());
+            std::fflush(stderr);
+            std::vector<int32_t> outw((size_t) strata::kernels::kVerifyMaxT);
+            std::vector<uint8_t> msg;
+            for (;;) {
+                strata::core::StageSocket s;
+                std::string peer;
+                if (!lis.accept(s, peer, err)) {
+                    std::fprintf(stderr, "strata stage: %s\n", err.c_str());
+                    return 1;
+                }
+                std::fprintf(stderr, "strata stage: a head connected from %s\n", peer.c_str());
+                // a new head starts from an empty session (it sends Reset before its first request anyway)
+                strata::core::session_zero(ss, g, nullptr, main_cs);
+                cudaStreamSynchronize(main_stream);
+                int64_t n_win = 0;
+                double ms_win = 0;
+                for (;;) {
+                    strata::core::StageMsg type;
+                    if (!s.recv(type, msg, err)) break;
+                    std::string fail;
+                    if (type == strata::core::StageMsg::Hello) {
+                        strata::core::StageHello h, mine;
+                        mine.lb = g_stage_lb;
+                        mine.le = g_stage_le;
+                        mine.hf = hf;
+                        mine.max_t = o.spec;
+                        if (msg.size() != sizeof h) fail = "a malformed Hello";
+                        if (fail.empty() && !s.send(strata::core::StageMsg::Ok, &mine, sizeof mine, nullptr, 0, err)) break;
+                    } else if (type == strata::core::StageMsg::Window) {
+                        int32_t T = 0, commit_first = 0;
+                        int64_t pos0 = 0;
+                        if (msg.size() >= 16) {
+                            std::memcpy(&T, msg.data(), 4);
+                            std::memcpy(&pos0, msg.data() + 4, 8);
+                            std::memcpy(&commit_first, msg.data() + 12, 4);
+                        }
+                        const size_t hbytes = sizeof(float) * (size_t) T * (size_t) hf;
+                        if (T < 1 || T > o.spec || msg.size() != 16 + 4 * (size_t) T + hbytes) {
+                            fail = "a malformed Window";
+                        } else if (commit_first > 0 && !ver.commit(commit_first, err)) {
+                            fail = err;   // the previous window's commit (same stream: the window below follows it)
+                        } else {
+                            const auto t0 = Clock::now();
+                            const int32_t* toks = (const int32_t*) (msg.data() + 16);
+                            std::memcpy(stage_in_host, msg.data() + 16 + 4 * (size_t) T, hbytes);
+                            std::atomic_thread_fence(std::memory_order_seq_cst);
+                            drive.d.layers = 0;
+                            drive.d.experts = 0;
+                            drive.d.failed = false;
+                            if (!ver.run(T, toks, pos0, win_pool_fn, win_pool_user, outw.data(), err) || drive.d.failed) {
+                                fail = drive.d.failed && drive.d.fail ? std::string(drive.d.fail) : err;
+                            } else {
+                                ms_win += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+                                ++n_win;
+                                if (!s.send(strata::core::StageMsg::Ok, stage_out_host, hbytes, nullptr, 0, err)) break;
+                            }
+                        }
+                    } else if (type == strata::core::StageMsg::Commit) {
+                        int32_t n_keep = 0;
+                        if (msg.size() == 4) std::memcpy(&n_keep, msg.data(), 4);
+                        if (!ver.commit(n_keep, err) || !ver.wait_commit(err)) fail = err;
+                        else if (!s.send(strata::core::StageMsg::Ok, nullptr, 0, nullptr, 0, err)) break;
+                    } else if (type == strata::core::StageMsg::Reset) {
+                        if (!ver.wait_commit(err)) {
+                            fail = err;
+                        } else {
+                            strata::core::session_zero(ss, g, nullptr, main_cs);
+                            cudaStreamSynchronize(main_stream);
+                            if (n_win > 0)
+                                std::fprintf(stderr, "strata stage: %lld windows, %.2f ms each on this GPU; per window: "
+                                             "waiting for the next %.2f ms, reading it %.2f ms, sending %.2f ms\n",
+                                             (long long) n_win, ms_win / (double) n_win, s.ms_wait / (double) n_win,
+                                             s.ms_recv / (double) n_win, s.ms_send / (double) n_win);
+                            s.ms_wait = s.ms_recv = s.ms_send = 0;
+                            n_win = 0;
+                            ms_win = 0;
+                            if (!s.send(strata::core::StageMsg::Ok, nullptr, 0, nullptr, 0, err)) break;
+                        }
+                    } else if (type == strata::core::StageMsg::Ping) {
+                        if (!s.send(strata::core::StageMsg::Ok, msg.data(), msg.size(), nullptr, 0, err)) break;
+                    } else if (type == strata::core::StageMsg::Quit) {
+                        break;
+                    } else {
+                        fail = "an unknown message";
+                    }
+                    if (!fail.empty()) {
+                        std::fprintf(stderr, "strata stage: %s\n", fail.c_str());
+                        if (!s.send(strata::core::StageMsg::Err, fail.data(), fail.size(), nullptr, 0, err)) break;
+                    }
+                }
+                std::fprintf(stderr, "strata stage: the head at %s left (%s)\n", peer.c_str(), err.c_str());
+                std::fflush(stderr);
+            }
+        }
         // --pipeline-windows 2: stage 0's GDN state before a speculative commit, restored when the guess was wrong.
         // Window W reads the state its snapshot must hold and no window writes it (only commits do), so it is copied
         // on a side stream while W runs, into the buffer of W's parity, and only W's speculative commit waits for it
@@ -14935,6 +15269,8 @@ int main(int argc, char** argv) {
             split_drive.pcie_num[0] = drive.d.pcie_num;
             split_drive_b.pcie_num[0] = drive.d.pcie_num;
             for (int st = 1; st < n_stages; ++st) {
+                // MULTINODE: a remote stage (and --remote-stage local) has no GpuStage behind it - its link is its own
+                if ((size_t) (st - 1) >= stages.size()) continue;
                 GpuStage& gs = *stages[(size_t) st - 1];
                 if (!(gs.link_gbps > 0.0)) continue;
                 gs.pcie_frac = std::min(pcie_share_max(), std::max(0.10, std::round(gs.link_gbps / (gs.link_gbps +
@@ -16302,6 +16638,7 @@ int main(int argc, char** argv) {
         // --pipeline-windows 2 loads the drafter with 8 rows: the serial loop's chain keeps its own length
         else if (use_mtp && mtp.max_t() > S_mtp) mtp.set_max_drafts(S_mtp - 1);
         strata::spec::SuffixDrafter sfx(std::max(1, o.suffix_draft), 64, (size_t) o.max_context + 4096);
+        strata::spec::ensure_session_lookup_source();   // STRATA_LOOKUP_SESSION=1: cross-request automaton drafts (kinetic)
         strata::spec::DraftPolicy policy(S);   // MTP or lookup window, learned over the whole process
         strata::spec::DraftPolicy policy_idle(S);   // --draft auto: the other drafter's learned costs; swapped in with it when a request uses the other drafter
         bool policy_is_df2 = use_df2;   // which drafter's costs `policy` holds (the engine's first drafter; swapped with policy_idle when a request uses the other one)
@@ -18252,7 +18589,7 @@ int main(int argc, char** argv) {
             // every slot done: the last commits have run before anything reads a slot (between windows nothing does)
             if (pmtp && !pipe_inflight() && !batch_on() && !pmtp_settle()) return false;
             if (!pipe_inflight() && !batch_on() && bt_windows > 0) {   // all idle: the timing line, as batch_step
-                const double w = (double) bt_windows, wall = std::chrono::duration<double, std::milli>(Clock::now() - bt_start).count();
+                const double wall = std::chrono::duration<double, std::milli>(Clock::now() - bt_start).count();
                 p4.span_end(wall);
                 pc.flush(wall, pc_ex());
                 char pa_txt[224] = "";
@@ -19971,6 +20308,32 @@ int main(int argc, char** argv) {
             if (resume == 0) {
                 strata::core::session_zero(ss, g, nullptr, main_cs);
                 cudaStreamSynchronize(main_stream);
+                for (auto& link_ptr : stage_links) {
+                    strata::core::StageLink& stage_link = *link_ptr;
+                    if (remote_head && !remote_local && stage_link.windows > 0) {   // MULTINODE: the last request's link time
+                        std::fprintf(stderr, "strata serve: multinode link: %lld windows %.2f ms each (stage compute "
+                                             "included), %lld commits %.2f ms each, %.1f MB out / %.1f MB in\n",
+                                     (long long) stage_link.windows, stage_link.ms_net / (double) stage_link.windows,
+                                     (long long) stage_link.commits,
+                                     stage_link.commits ? stage_link.ms_commit / (double) stage_link.commits : 0.0,
+                                     stage_link.socket().bytes_out / 1e6, stage_link.socket().bytes_in / 1e6);
+                        std::fprintf(stderr, "strata serve: multinode link per window: send %.2f ms, waiting for the "
+                                             "reply %.2f ms, reading it %.2f ms\n",
+                                     stage_link.socket().ms_send / (double) stage_link.windows,
+                                     stage_link.socket().ms_wait / (double) stage_link.windows,
+                                     stage_link.socket().ms_recv / (double) stage_link.windows);
+                        const_cast<strata::core::StageSocket&>(stage_link.socket()).ms_send = 0;
+                        const_cast<strata::core::StageSocket&>(stage_link.socket()).ms_wait = 0;
+                        const_cast<strata::core::StageSocket&>(stage_link.socket()).ms_recv = 0;
+                        stage_link.windows = stage_link.commits = 0;
+                        stage_link.ms_net = stage_link.ms_commit = 0;
+                    }
+                    if (remote_head && !remote_local && !stage_link.reset(err)) {   // MULTINODE: the stage's layers start empty too
+                        std::printf("ERR the remote stage: %s\n", err.c_str());
+                        std::fflush(stdout);
+                        return 1;
+                    }
+                }
                 for (auto& st : stages) {
                     const strata::core::OnDevice on(st->dev);
                     strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
@@ -23385,6 +23748,16 @@ int main(int argc, char** argv) {
                     if (st.kv_q4) {
                         const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
                         a = {{h ? st.host.k_q4 : st.k_q4, q4b}, {h ? st.host.v_q4 : st.v_q4, q4b}};
+                    } else if (st.kv_turbo2) {
+                        const int64_t t2b = (int64_t) strata::kernels::kv_turbo_bytes_per_head((int) qs.head_dim);
+                        a = {{h ? st.host.k_turbo : st.k_turbo, t2b}, {h ? st.host.v_turbo : st.v_turbo, t2b}};
+                    } else if (st.kv_turbo3) {
+                        const int64_t t3b = (int64_t) strata::kernels::kv_turbo3_bytes_per_head((int) qs.head_dim);
+                        a = {{h ? st.host.k_turbo3 : st.k_turbo3, t3b}, {h ? st.host.v_turbo3 : st.v_turbo3, t3b}};
+                    } else if (st.kv_k3v8) {
+                        const int64_t t3b = (int64_t) strata::kernels::kv_turbo3_bytes_per_head((int) qs.head_dim);
+                        a = {{h ? st.host.k_turbo3 : st.k_turbo3, t3b}, {h ? st.host.v_q : st.v_q, kvb},
+                             {h ? st.host.v_scale : st.v_scale, scb}};
                     } else if (st.kv_hybrid) {
                         const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
                         a = {{h ? st.host.k_q : st.k_q, kvb}, {h ? st.host.v_q4 : st.v_q4, q4b},
@@ -24762,6 +25135,7 @@ int main(int argc, char** argv) {
         int64_t rounds = 0, drafts_total = 0, drafts_ok = 0, corrupt_counter = 0;
         if (use_mtp && S_mtp < o.spec) mtp.set_max_drafts(S_mtp - 1);
         strata::spec::SuffixDrafter sfx(std::max(1, o.suffix_draft), 64, (size_t) o.max_context + 4096);
+        strata::spec::ensure_session_lookup_source();   // STRATA_LOOKUP_SESSION=1: cross-request automaton drafts (kinetic)
         strata::spec::DraftPolicy policy(o.spec);   // MTP or lookup window (see draft_policy.hpp)
         auto source_policy = policy;   // this generation's: committed outcomes only (observe_committed)
         strata::spec::DraftPolicy::ChainState chain_st;

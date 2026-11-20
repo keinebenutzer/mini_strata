@@ -2,6 +2,8 @@
 #include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/kv_q8.hpp"
+#include "strata/kernels/kv_turbo.hpp"
+#include "strata/kernels/kv_turbo3.hpp"
 
 #include <cuda_runtime.h>
 
@@ -40,10 +42,27 @@ Runs runs_of(const QsaAttnPools& slots, const KvHostPools& host, int fmt, const 
         r.src[1] = (const uint8_t*) host.k_scale; r.dst[1] = (uint8_t*) slots.k_scale; r.len[1] = scales;
         r.src[2] = (const uint8_t*) host.v_q4;    r.dst[2] = (uint8_t*) slots.v_q4;    r.len[2] = v;
         r.n = 3;
+    } else if (fmt == kKvK3V8) {   // k3v8 (kv_k3v8.hpp): rotated turbo3 K codes, rotated int8 V codes + scales
+        const int k = rows * (int) kv_turbo3_bytes_per_head((int) s.head_dim);
+        const int codes = rows * (int) s.head_dim, scales = rows * (int) (s.head_dim / KV_Q8_GROUP) * 2;
+        r.src[0] = (const uint8_t*) host.k_turbo3; r.dst[0] = (uint8_t*) slots.k_turbo3; r.len[0] = k;
+        r.src[1] = (const uint8_t*) host.v_q;      r.dst[1] = (uint8_t*) slots.v_q;      r.len[1] = codes;
+        r.src[2] = (const uint8_t*) host.v_scale;  r.dst[2] = (uint8_t*) slots.v_scale;  r.len[2] = scales;
+        r.n = 3;
     } else if (fmt == kKvQ4) {
         const int bytes = rows * (int) kv_q4_bytes_per_head((int) s.head_dim);
         r.src[0] = (const uint8_t*) host.k_q4; r.dst[0] = (uint8_t*) slots.k_q4; r.len[0] = bytes;
         r.src[1] = (const uint8_t*) host.v_q4; r.dst[1] = (uint8_t*) slots.v_q4; r.len[1] = bytes;
+        r.n = 2;
+    } else if (fmt == kKvTurbo2) {
+        const int bytes = rows * (int) kv_turbo_bytes_per_head((int) s.head_dim);
+        r.src[0] = (const uint8_t*) host.k_turbo; r.dst[0] = (uint8_t*) slots.k_turbo; r.len[0] = bytes;
+        r.src[1] = (const uint8_t*) host.v_turbo; r.dst[1] = (uint8_t*) slots.v_turbo; r.len[1] = bytes;
+        r.n = 2;
+    } else if (fmt == kKvTurbo3) {
+        const int bytes = rows * (int) kv_turbo3_bytes_per_head((int) s.head_dim);
+        r.src[0] = (const uint8_t*) host.k_turbo3; r.dst[0] = (uint8_t*) slots.k_turbo3; r.len[0] = bytes;
+        r.src[1] = (const uint8_t*) host.v_turbo3; r.dst[1] = (uint8_t*) slots.v_turbo3; r.len[1] = bytes;
         r.n = 2;
     } else if (fmt == kKvInt8) {
         const int codes = rows * (int) s.head_dim, scales = rows * (int) (s.head_dim / KV_Q8_GROUP) * 2;
@@ -256,6 +275,11 @@ uint64_t kv_block_bytes(const QsaShapes& s, int fmt) {
         return rows * (uint64_t) s.head_dim + rows * (uint64_t) (s.head_dim / KV_Q8_GROUP) * 2 +
                rows * kv_q4_bytes_per_head((int) s.head_dim);
     if (fmt == kKvQ4) return rows * kv_q4_bytes_per_head((int) s.head_dim) * 2;
+    if (fmt == kKvTurbo2) return rows * kv_turbo_bytes_per_head((int) s.head_dim) * 2;
+    if (fmt == kKvTurbo3) return rows * kv_turbo3_bytes_per_head((int) s.head_dim) * 2;
+    if (fmt == kKvK3V8)   // k3v8: turbo3 K half + int8 V half (codes and scales) of one block
+        return rows * kv_turbo3_bytes_per_head((int) s.head_dim) + rows * (uint64_t) s.head_dim +
+               rows * (uint64_t) (s.head_dim / KV_Q8_GROUP) * 2;
     return fmt == kKvInt8 ? rows * (uint64_t) s.head_dim * 2 + rows * (uint64_t) (s.head_dim / KV_Q8_GROUP) * 2 * 2
                 : rows * (uint64_t) s.head_dim * 2 * 2;
 }
