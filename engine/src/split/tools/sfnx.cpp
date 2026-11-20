@@ -864,6 +864,24 @@ struct Server {
                      slot, st.prompt_tokens, st.reused, st.prompt_tokens - st.reused, st.prompt_ms, st.generated, st.decode_ms,
                      st.generated * 1000.0 / std::max(1.0, st.decode_ms), st.drafts_accepted, st.drafts_offered, st.rounds, st.lookup_rounds,
                      st.decode_ms / std::max(1, st.rounds));
+        // FNX_BATCH_DEPTH_STATS=1: the acceptance the lane actually measured, per draft position (decayed, as the
+        // plan reads it).  A position whose share falls under what one more row costs is the plan's own cut-off point.
+        if (fnx::env_flag("FNX_BATCH_DEPTH_STATS")) {
+            const auto& bl = slots[(size_t) slot].bl;
+            const auto show = [this, slot](const char* tag, const std::vector<double>& tried, const std::vector<double>& stood) {
+                std::string s;
+                for (int j = 0; j < (int) tried.size(); ++j)
+                    if (tried[(size_t) j] > 1.0) {
+                        char b[48];
+                        std::snprintf(b, sizeof b, " %d:%.2f", j + 1, stood[(size_t) j] / tried[(size_t) j]);
+                        s += b;
+                    }
+                if (!s.empty())
+                    std::fprintf(stderr, "sfnx: slot %d acceptance%s by draft position:%s\n", slot, tag, s.c_str());
+            };
+            show(" chain", bl.tried, bl.stood);
+            show(" lookup", bl.lk_tried, bl.lk_stood);
+        }
         slots[(size_t) slot].idle_since = std::chrono::steady_clock::now();
         save_routes();
     }
