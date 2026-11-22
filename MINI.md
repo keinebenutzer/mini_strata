@@ -13,7 +13,7 @@ Typ-Liste `STRATA_D_FMTS` in `engine/src/kernels/cuda/iq_kernels.cu` um
 **IQ2_XXS, IQ2_XS, IQ3_XXS, IQ3_S, IQ2_S** — damit passen die kleinen
 Unsloth-UD-Pakete (Qwen3.6-35B-A3B, ~12,4 GB Datei) in die native Expertenschleife.
 Dazu macht der Fork die 2-Bit-Größe in `setup.sh`/`setup.py` wählbar (mit
-Automatik-Bau der mq8-Gewichte, `tools/build_mq8.py`) — Upstream bietet qwen36 nur
+Automatik-Bau der mq8-Gewichte, `terminal/tools/build_mq8.py`) — Upstream bietet qwen36 nur
 ab 4-Bit an. Sonst ändert der Fork nichts; alles andere ist Upstream.
 
 ## So fühlt es sich an (gemessen)
@@ -61,7 +61,7 @@ Bevor du lädst, die Datei prüfen: sie muss einen MTP-Block enthalten
 Bevorzugt die **MTP-Fassung** des Unsloth-Repos (gleicher Modellname, ~1 GB größer);
 die Nicht-MTP-Fassung läuft auf diesem Pfad nicht. Download immer direkt auf der
 Zielmaschine, z. B. `uvx hf download hf://<REPO>/<DATEI> --local-dir ~/models`.
-Danach die Gewichte bauen (einmal): `python3 tools/build_mq8.py DATEI DATEI.mq8.gguf`
+Danach die Gewichte bauen (einmal): `python3 terminal/tools/build_mq8.py DATEI DATEI.mq8.gguf`
 — die Engine nimmt nur die mq8-Fassung (MTP-Experten auf Q8_0).
 
 ## Bauen

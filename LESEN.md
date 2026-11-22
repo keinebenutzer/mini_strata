@@ -16,7 +16,7 @@ Das ist alles. Die Routine führt direkt zu unserem Modell
    die 2-Bit-Experten; der fertig gelieferte Engine kann das nicht)
 3. Modell automatisch herunterladen
 4. **Gewichte bauen**: der MTP-Block (blk.40) kommt als Q2_K/Q3_K daher,
-   die Engine-Kernel wollen Q8_0 — `tools/build_mq8.py` hebt die drei
+   die Engine-Kernel wollen Q8_0 — `terminal/tools/build_mq8.py` hebt die drei
    Experten-Tensoren auf Q8_0 und schreibt die Datei neu (`.mq8.gguf`, +0,6 GB)
 5. Tokenizer aus der GGUF erzeugen
 6. Config schreiben (auf Karten bis 6,5 GB VRAM setzt sie `--expert-vram`
@@ -49,7 +49,7 @@ Rechnern findet CMake `nvcc` nur mit gesetztem `CUDACXX=/pfad/zu/nvcc`.
 ### Gewichte
 
 ```bash
-python3 tools/build_mq8.py Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf Qwen3.6-35B-A3B-UD-IQ2_XXS.mq8.gguf
+python3 terminal/tools/build_mq8.py Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf Qwen3.6-35B-A3B-UD-IQ2_XXS.mq8.gguf
 ```
 
 ### Starten
