@@ -1,0 +1,32 @@
+{
+  "exe": "/home/BENUTZER/mini_strata/build/strata",
+  "args": [
+    "--native",
+    "/home/BENUTZER/models/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf",
+    "--max-context",
+    "13312",
+    "--prefill",
+    "auto",
+    "--mtp",
+    "2",
+    "--cpu-threads",
+    "7",
+    "--expert-vram",
+    "0.3",
+    "--hybrid-rows",
+    "64"
+  ],
+  "tokenizer": "/home/BENUTZER/mini_strata/tokenizer_q36/tokenizer",
+  "model_name": "qwen3.6-35b-a3b-ud-iq2_xxs",
+  "arch": "qwen35moe",
+  "log": "/home/BENUTZER/mini_strata/serve.log",
+  "cwd": "/home/BENUTZER/mini_strata",
+  "host": "127.0.0.1",
+  "port": 11435,
+  "api_key": "",
+  "allowed_hosts": ["127.0.0.1", "localhost"],
+  "open_browser": false,
+  "lib_dirs": [
+    "/usr/local/cuda-12.8/cuda-12.8/targets/x86_64-linux/lib"
+  ]
+}

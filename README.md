@@ -1,3 +1,9 @@
+> **Mini-Strata Fork.** Diese Variante bringt Strata auf 4-GB-Grafikkarten:
+> Qwen3.6-35B-A3B (MoE, 35 Mrd.) mit Experten im Arbeitsspeicher — gemessen 48 Token/s
+> Decode auf einer RTX A2000 Laptop 4 GB. Alles dazu: [MINI.md](MINI.md) · Ablauf: [LESEN.md](LESEN.md).
+> Basis ist Upstream [Niko1221/Strata](https://github.com/Niko1221/Strata) (MIT); der Fork fügt
+> 2-Bit-Expertenunterstützung für den q36-Pfad hinzu.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="app/host/public/brand/strata-lockup-dark.svg">
