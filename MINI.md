@@ -12,7 +12,9 @@ Down-Projektions-Kernel nur IQ4- und K-Quants kennen. Dieser Fork erweitert die
 Typ-Liste `STRATA_D_FMTS` in `engine/src/kernels/cuda/iq_kernels.cu` um
 **IQ2_XXS, IQ2_XS, IQ3_XXS, IQ3_S, IQ2_S** — damit passen die kleinen
 Unsloth-UD-Pakete (Qwen3.6-35B-A3B, ~12,4 GB Datei) in die native Expertenschleife.
-Mehr ändert der Fork nicht; alles andere ist Upstream.
+Dazu macht der Fork die 2-Bit-Größe in `setup.sh`/`setup.py` wählbar (mit
+Automatik-Bau der mq8-Gewichte, `tools/build_mq8.py`) — Upstream bietet qwen36 nur
+ab 4-Bit an. Sonst ändert der Fork nichts; alles andere ist Upstream.
 
 ## So fühlt es sich an (gemessen)
 
@@ -37,7 +39,18 @@ Die Experten liegen komplett im Arbeitsspeicher; die Karte hält Dichte
 - CUDA-12.x-Treiber; die Laufzeitbibliotheken (`libcudart.so.12`, `libcublas.so.12`,
   `libcublasLt.so.12`) müssen im `lib_dirs`-Pfad der Config stehen
 - freier Arbeitsspeicher ab ~16 GB (Experten + Puffer), 8 physische Kerne empfohlen
-- ~13 GB Platz auf der Zielmaschine für das Modell
+- ~25 GB Platz auf der Zielmaschine (Modell 11,8 GB + die gebaute mq8-Fassung 12,4 GB)
+- `g++` und `nvcc` (CUDA 12.x) für den Engine- und Gewichts-Bau
+
+## Der automatische Weg (empfohlen)
+
+```bash
+./setup.sh --family qwen36 --model UD-IQ2_XXS --yes
+```
+
+Ein Befehl: Umgebung, Engine-Kompilierung, Modell-Download (SHA-256-geprüft),
+mq8-Gewichts-Bau, Tokenizer, Config und Start — Einzelheiten in LESEN.md.
+Die folgenden Abschnitte sind der Handbetrieb für Sonderfälle.
 
 ## Modell holen
 
@@ -48,6 +61,8 @@ Bevor du lädst, die Datei prüfen: sie muss einen MTP-Block enthalten
 Bevorzugt die **MTP-Fassung** des Unsloth-Repos (gleicher Modellname, ~1 GB größer);
 die Nicht-MTP-Fassung läuft auf diesem Pfad nicht. Download immer direkt auf der
 Zielmaschine, z. B. `uvx hf download hf://<REPO>/<DATEI> --local-dir ~/models`.
+Danach die Gewichte bauen (einmal): `python3 tools/build_mq8.py DATEI DATEI.mq8.gguf`
+— die Engine nimmt nur die mq8-Fassung (MTP-Experten auf Q8_0).
 
 ## Bauen
 
@@ -116,7 +131,11 @@ erwartete Stelle kopieren.
 ## Stand halten
 
 Der Fork steht auf `v0.2.18` (`6e38f588a`). Für ein Update: Upstream-Zweig aktualisieren,
-dann die zwei Fork-Stellen nachtragen — `STRATA_D_FMTS` in
-`engine/src/kernels/cuda/iq_kernels.cu` (Typ-Liste, beide `#ifdef`-Zweige) und, falls
-Upstream die Handoff-Region in `engine/src/program/generate.cpp` erneut umschreibt,
-diese mit der Fork-Handoff-Zeile (`hand_host`) zusammenführen.
+dann die Fork-Stellen nachtragen — `STRATA_D_FMTS` in
+`engine/src/kernels/cuda/iq_kernels.cu` (Typ-Liste, beide `#ifdef`-Zweige), die
+Handoff-Zeile (`hand_host`) in `engine/src/program/generate.cpp` falls Upstream die
+Region umschreibt, und die Setup-Automatik: `QWEN36_FILES` + `models` (UD-IQ2_XXS)
+und die mq8-Bau-/`--expert-vram`-Blöcke in `terminal/setup.py`,
+`BASE_GIB_MODEL`/`HYBRID_MIN_GIB` in `terminal/strata_control/own_path_fit.py`,
+die Werkzeuge unter `tools/` (`build_mq8.py`, `mtp_requant.cpp`, `mtp_splice.py`,
+`gguf_hdr.py`).
