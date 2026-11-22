@@ -781,6 +781,7 @@ MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
 # packs): OWN_PATH_FAMILIES, offered in the same menu and installed by install_own_path.  NVIDIA (CUDA) and AMD (HIP)
 # only: the Intel Arc (SYCL) engine refuses it.
 QWEN36_FILES = {
+    "Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf": (11819399456, "627e2b05f83088448e27861ec392d56efc2b178783cae5adfa4ad2d988441203"),   # fork: the 2-bit size (its MTP experts are rebuilt to Q8_0, see tools/build_mq8.py)
     "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf": (22853663008, "55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1"),
     "Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf": (32611711264, "35fce994cd36104a7dc1bd8a4bdf13778145664c00fdef6773aebc9246e5019c"),
     "Qwen3.6-35B-A3B-Q8_0.gguf": (37801097504, "c1283d8b80c3e38b2735ddbc9766d3b3126f44d6c484be419d4e101d09a76131"),
@@ -796,7 +797,8 @@ OWN_PATH_FAMILIES = {
                # RAM: the engine keeps a copy of every expert in RAM when they do not all fit in VRAM (the hybrid mode),
                # so the file's size plus room for the OS and the rest (measured: UD-Q4_K_XL on a 46 GB PC with a 12 GB
                # card, 18.75 GiB of experts pinned)
-               "models": {"UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic), the smallest", "ram_gb": 32},
+               "models": {"UD-IQ2_XXS": {"about": "2-bit (Unsloth Dynamic), for small cards: the experts live in RAM; this fork builds its MTP weights (mq8)", "ram_gb": 16},
+                          "UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic), the smallest", "ram_gb": 32},
                           "UD-Q6_K_XL": {"about": "6-bit (Unsloth Dynamic), closer to the full model", "ram_gb": 44},
                           "Q8_0": {"about": "8-bit, the closest to the full model", "ram_gb": 52}},
                "sha256": QWEN36_FILES,
@@ -9609,6 +9611,9 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
                      f"choose a smaller size, or --model {model} --yes to install it anyway", "  Install it anyway?")
         warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose")
     ok(f"size: {model}")
+    if model == "UD-IQ2_XXS" and not a.build:
+        a.build = True        # the 2-bit experts run on this fork's engine only: the ready-made engine has no kernels for them
+        say("  this fork runs the 2-bit experts: its engine is compiled here (a C++/CUDA compiler is needed)")
     tag = fam["tag"] + model
     rec_ctx = own_path_context(fam, gpu.get("vram_gb", 0.0), model)
     if a.context:
@@ -9693,6 +9698,16 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         download(fam["hf"] + gguf.name, gguf)
     verify_sha256(gguf, *fam["sha256"][published], own=bool(a.gguf_dir))
     ok(f"model file: {gguf}")
+    if model == "UD-IQ2_XXS":                        # the fork's weight build: the MTP block's Q2_K/Q3_K experts go to Q8_0, the kernel list takes that
+        mq8 = folder / (published[:-5] + ".mq8.gguf")
+        if not mq8.exists():
+            if free_gb(folder) < size * 1.1 / 1e9:
+                fail(f"building the mq8 needs about {size * 1.1 / 1e9:.0f} GB more free space in {folder}",
+                     "free disk next to the model file and run setup again")
+            say("  building the MTP weights (blk.40 experts Q2_K/Q3_K -> Q8_0) ...")
+            run([sys.executable, str(ROOT / "tools" / "build_mq8.py"), str(gguf), str(mq8)])
+        gguf = mq8
+        ok(f"model file (mq8): {gguf}")
     if vision != "none" and fam.get("mmproj"):         # the image encoder: Unsloth's mmproj, pinned, size + SHA-256 checked
         mmproj = folder / fam["mmproj"]
         if not a.gguf_dir and not have(mmproj) and not mmproj.with_name(mmproj.name + ".part").exists():
@@ -9718,6 +9733,8 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
 
     step(7, "writing the start script")
     args = ["--native", str(gguf), "--max-context", str(ctx), "--prefill", "auto", "--mtp", str(fam["mtp"])]
+    if model == "UD-IQ2_XXS" and vram_gb <= 6.5 and "--expert-vram" not in args:
+        args += ["--expert-vram", f"{max(vram_gb - 3.7, 0.3):.1f}"]   # the measured 4 GB recipe: the dense side keeps its room on the card, the experts run from RAM
     if a.vram_reserve_mib is not None:             # VRAM left free for other programs: the experts take that much less
         vram = gpu.get("vram_gb", 0.0)
         if vram > 0:
