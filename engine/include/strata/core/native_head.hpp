@@ -20,6 +20,11 @@ public:
     NativeHead& operator=(const NativeHead&) = delete;
 
     bool load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err);
+    // mini_strata: der peer_device-Parameter aus 0.2.20 wird ignoriert (Einziger-Grafikkarte).
+    bool load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err, int peer_device) {
+        (void) peer_device;
+        return load(shards, n_in, n_out, err);
+    }
     void unload();
     /// Moves the loaded weights from VRAM to mapped pinned host memory (a card too short for it: every logits row then reads them over PCIe).  False: not loaded, already
     /// on the host, or a repacked layout that stays in VRAM.

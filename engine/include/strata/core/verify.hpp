@@ -454,6 +454,9 @@ public:
         if (bal_ != nullptr && m_bal_ != nullptr) bal_->on = !paused;
     }
     bool pcie_balance_on() const { return bal_ != nullptr && m_bal_ != nullptr; }
+    // mini_strata: PCIe-Staging-Aufteilung und Geraete-Treffergruppen (device_hits) sind entfernt.
+    void set_no_pcie_share(bool) {}
+    bool device_hits_active() const { return false; }
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
     int64_t windows = 0;
