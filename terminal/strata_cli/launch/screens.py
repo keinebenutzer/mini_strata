@@ -92,10 +92,13 @@ def drafting_choice_available(ctx, family: str | None = None) -> bool:
 
 def flow_for(ctx, family: str | None = None) -> list[str]:
     """The steps of this computer: the Cards step exists only when two or more graphics cards can be used; the Drafting step only for
-    Qwen3.8-Flash-Next on a computer that can run DFlash2; Tencent Hy4-Flash skips Qwen-only steps (cards, drafting, parallel, tuning, advanced)."""
+    Qwen3.8-Flash-Next on a computer that can run DFlash2; Tencent Hy4-Flash skips Qwen-only steps (drafting, parallel, tuning, advanced)."""
     fam = family if family is not None else getattr(getattr(ctx, "settings", None), "family", None)
     if fam == "hy4-flash":
+        if len(ctx.computer.usable_gpus) >= 2:
+            return ["model", "cards", "folder", "context", "pictures", "access", "save"]
         return ["model", "folder", "context", "pictures", "access", "save"]
+
     ids = [sid for sid, _ in STEPS]
     if len(ctx.computer.usable_gpus) < 2:
         ids.remove("cards")
@@ -461,7 +464,7 @@ class ModelScreen(Base):
     step_id = "model"
     hints = "↑↓ choose   Enter next   o use my own files   Esc back   ? help"
     help_text = ("Pick the model. 'Needs' is the RAM + graphics memory the model's files take (the app's figure; the n-gram table stays on your SSD and is not counted). 'fits' means they fit the RAM and "
-                 "the graphics memory together; 'may run slower' means they do not, so part is read from the SSD while it answers. Neither is a block: you can still try it.")
+                 "the graphics memory together; 'may run slower' means part streams directly from your NVMe SSD (GPU + SSD or CPU + SSD with a bounded RAM ring and 0 swap). Neither is a block: you can still try it.")
 
     BINDINGS = Base.BINDINGS + [Binding("o", "own", "Own files", show=False)]
 
@@ -587,7 +590,6 @@ class ModelScreen(Base):
                 s.parallel = None
                 s.tune = "skip"
                 s.kv = None
-                s.gpu_roles = None
                 s.extra = {}
             r = next(x for x in self.rows if (x.family, x.model) == (fam, model))
             if r.verdict == "no":
@@ -646,7 +648,6 @@ class ModelScreen(Base):
                 s.parallel = None
                 s.tune = "skip"
                 s.kv = None
-                s.gpu_roles = None
                 s.extra = {}
             self.ctx.picked_in_list = False
             self.ctx.refresh_disk()                          # N1: these files need no download, so the list stops marking the row (and the Save screen its "!" line)
@@ -1017,11 +1018,26 @@ class ContextScreen(Base):
         items.append(Item(["Custom…"], key="custom"))
         self.query_one(Menu).set_items(items, sel)
 
+    def _inkling_backend(self) -> str | None:
+        comp = getattr(self.ctx, "computer", None)
+        ev = str(getattr(comp, "engine_vendor", None) or "").lower()
+        if ev == "amd":
+            return "hip"
+        if ev == "intel":
+            return "sycl"
+        if ev == "apple":
+            return "metal"
+        if ev == "nvidia":
+            return "cuda"
+        cat = getattr(self.ctx, "catalog", None)
+        return cat.installed_backend() if cat is not None and hasattr(cat, "installed_backend") else None
+
     def refresh_body(self) -> None:
         s = self.ctx.settings
         if s.family == "hy4-flash":
             self.query_one("#kvline", Static).update(Text("Conversation memory: managed automatically by Hy4-Flash", style=MUTE))
             return
+
         kv = self.kv()
         label = {"int8": "8-bit (recommended: what the published numbers were measured with)",
                  "q4_0": "4-bit (half the memory, a little less precise on long documents)",
@@ -1045,6 +1061,7 @@ class ContextScreen(Base):
     def action_memory(self) -> None:
         s = self.ctx.settings
         if s.family == "hy4-flash":
+
             return
         order = ["int8", "q4_0", "turbo3", "k3v8", "turbo2"]
         cur = s.kv or "int8"
@@ -1200,6 +1217,7 @@ class DraftingScreen(Base):
     help_text = "Drafting is how the model guesses the next words ahead to make answers faster. One drafter runs at a time."
 
     CHOICES = (("auto", "Auto (recommended)"), ("mtp", "MTP"), ("dflash2", "DFlash2"), ("off", "Off"))
+    INKLING_CHOICES = (("auto", "DSpark Block-8 (recommended)"), ("off", "Off"))
 
     def body(self) -> ComposeResult:
         yield Static(Text("How should the model guess ahead?", style=f"bold {ACCENT}"), markup=False)
@@ -1207,6 +1225,15 @@ class DraftingScreen(Base):
 
     def on_mount(self) -> None:
         s = self.ctx.settings
+        if s.family == "inkling-2-mini":
+            items = [Item([label, Cell("DSpark" if key == "auto" else "no drafter", MUTE)], key=key)
+                     for key, label in self.INKLING_CHOICES]
+            shown = "off" if s.drafting == "off" else "auto"
+            sel = [key for key, _ in self.INKLING_CHOICES].index(shown)
+            self.query_one(Menu).columns = [("", 30), ("", 0)]
+            self.query_one(Menu).set_items(items, sel)
+            self.paint()
+            return
         from strata_cli.launch import modelstate
         now = {"dflash2": "DFlash2", "mtp": "MTP", "off": "Off"}[modelstate.resolved_drafting(None, s.family)]
         items = [Item([label, Cell(now, "") if key == "auto" else Cell("", "")], key=key) for key, label in self.CHOICES]
@@ -1217,10 +1244,15 @@ class DraftingScreen(Base):
         self.paint()
 
     def explain(self) -> Text:
+        if self.ctx.settings.family == "inkling-2-mini":
+            return Text("DSpark is Inkling-2-Mini's built-in block drafter. Choose Off to pass --draft off (uses less VRAM and skips speculative drafting).", style=MUTE)
         return Text("")
 
     def commit(self) -> None:
         key = self.menu().current.key
+        if self.ctx.settings.family == "inkling-2-mini":
+            self.ctx.settings.drafting = "off" if key == "off" else None
+            return
         from strata_cli.launch import modelstate
         # Auto stays "nobody chose" (a saved preset writes nothing) unless the model's file or this launch holds another choice: then Auto is written, so it wins
         base = self.ctx.base_config() or {}
@@ -1371,6 +1403,7 @@ class AdvancedScreen(Base):
 
     BINDINGS = Base.BINDINGS + [
         Binding("e", "edit", show=False), Binding("delete", "reset", show=False), Binding("backspace", "reset", show=False),
+        Binding("ctrl+h", "reset", show=False),
         Binding("x", "experimental", show=False), Binding("slash", "filter", show=False), Binding("a", "add", show=False),
         Binding("c", "copy", show=False), Binding("n", "go_next", show=False), Binding("right", "go_next", show=False),
         Binding("tab", "scroll_command", show=False)]
@@ -1547,12 +1580,33 @@ class AdvancedScreen(Base):
         cur = self.menu().current
         if cur is None or cur.key in (None, "__add__"):
             return
-        if self.ctx.settings.extra.pop(cur.key, None) is not None:
+        key = cur.key
+        extra = self.ctx.settings.extra
+        popped = extra.pop(key, None)
+        if popped is None and isinstance(key, str) and key.startswith("--"):
+            popped = extra.pop(key[2:], None)
+        if popped is not None:
             self.ctx.invalidate_rows()
             self.rows = self.ctx.advanced_rows()
             self.build()
-            self.say(f"{cur.key} is back to the tuned value.")
+            self.say(f"{key} is back to the tuned value.")
             self.paint()
+            return
+        row = next((x for x in self.rows if x.name == key), None)
+        if row is not None and not row.known:
+            # #6519: an unknown (red-marked) flag coming from the installed or tuned config is not in s.extra yet;
+            # turning it off in s.extra removes it from this launch's command (pressing Del again puts it back).
+            extra[key] = "off"
+            self.ctx.invalidate_rows()
+            self.rows = self.ctx.advanced_rows()
+            self.build()
+            self.say(f"{key} turned off for this launch (Del again puts it back).")
+            self.paint()
+            return
+        if row is not None and row.tuned and row.tuned != row.default:
+            self.say(f"{key} is already at its tuned value.")
+        else:
+            self.say(f"{key} is already at its default value.")
 
     def action_experimental(self) -> None:
         if self.mode:

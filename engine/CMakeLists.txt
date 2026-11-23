@@ -10,7 +10,7 @@
 # building for a pre-Ampere arch would produce a binary that runs and is wrong about its own performance, which is
 # the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
-project(strata VERSION 0.1.64 LANGUAGES CXX)
+project(strata VERSION 0.1.66 LANGUAGES CXX)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_geometry.cmake)   # -DSTRATA_GEOMETRY=<name>: the model shape the kernels are compiled for (default flash_next, no flag added)
 # The build is cut by backend (cleanup 5.4): each file below only DEFINES macros (strata_<part>()), which run here, in this scope, at the place their
 # block used to be - so this file reads in the order the old single CMakeLists.txt evaluated.
@@ -311,6 +311,10 @@ if(STRATA_BUILD_TESTS)
   add_executable(kv_grow_rules_test tests/core/kv_grow_rules_test.cpp)
   target_include_directories(kv_grow_rules_test PRIVATE include)
   add_test(NAME kv_grow_rules_test COMMAND kv_grow_rules_test)
+  # #6681: KV dtype guard truth table for HIP/Metal/SYCL pools (no GPU)
+  add_executable(kv_dtype_guard_test tests/core/kv_dtype_guard_test.cpp)
+  target_include_directories(kv_dtype_guard_test PRIVATE src/inkling2)
+  add_test(NAME kv_dtype_guard_test COMMAND kv_dtype_guard_test)
   # how the prompt path's K/V append reaches the host copy under KV streaming: the switch both ways, the backend defaults, no pool (no GPU)
   add_executable(kv_host_dma_test tests/core/kv_host_dma_test.cpp)
   target_include_directories(kv_host_dma_test PRIVATE include)
@@ -412,11 +416,20 @@ if(STRATA_BUILD_TESTS)
   add_executable(q36_expert_info_test tests/program/q36_expert_info_test.cpp)
   target_include_directories(q36_expert_info_test PRIVATE include)
   add_test(NAME q36_expert_info_test COMMAND q36_expert_info_test)
+  # #6522 / #6425: qwen35moe per-layer head_count_kv array, feed_forward_length=0, and hybrid staging headroom (no GPU)
+  add_executable(q36_metadata_test src/qwen35/q36_metadata_test.cpp)
+  target_link_libraries(q36_metadata_test PRIVATE strata_artifact)
+  add_test(NAME q36_metadata_test COMMAND q36_metadata_test)
 
   # the default CPU prefill share is not armed when every expert is resident (#1595): header-only rule, no GPU
   add_executable(share_rules_test tests/prefill/share_rules_test.cpp)
   target_include_directories(share_rules_test PRIVATE include)
   add_test(NAME share_rules_test COMMAND share_rules_test)
+
+  # Track 6A: low-VRAM (<= 13 GiB) consumer GPU rules (auto reserve, tiny-cache anti-thrash, Zipf pinning, auto L3_PF)
+  add_executable(low_vram_rules_test src/core/low_vram_rules_test.cpp)
+  target_include_directories(low_vram_rules_test PRIVATE include)
+  add_test(NAME low_vram_rules_test COMMAND low_vram_rules_test)
 
   # the chunk a prompt piece below the walk floor lends its buffers for (the staged layout, not the rounded chunk's streamed one): header-only rule, no GPU
   add_executable(loan_rules_test tests/prefill/loan_rules_test.cpp)
@@ -829,6 +842,7 @@ option(STRATA_BUILD_SPLIT "Build strata-split: sFNX's split-every-layer engine, 
 if(STRATA_BUILD_SPLIT)
   add_subdirectory(src/split)
 endif()
+
 
 # What this configure registered, so a missing capability is a stated skip (tools/check prints this line too).
 if(STRATA_BUILD_TESTS)

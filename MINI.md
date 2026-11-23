@@ -1,7 +1,7 @@
 # Mini-Strata — Strata auf 4-GB-Grafikkarten
 
 Ein Fork von [Strata](https://github.com/Niko1221/Strata) (MIT), geschnitten auf
-**v0.2.18 (Engine 0.1.64)**, für Rechner mit kleiner VRAM-Karte und viel Arbeitsspeicher:
+**v0.2.20 (Engine 0.1.66)**, für Rechner mit kleiner VRAM-Karte und viel Arbeitsspeicher:
 ein 35-Milliarden-MoE-Modell läuft lokal auf einer 4-GB-Grafikkarte.
 
 ## Was hier anders ist
@@ -130,7 +130,7 @@ erwartete Stelle kopieren.
 
 ## Stand halten
 
-Der Fork steht auf `v0.2.18` (`6e38f588a`). Für ein Update: Upstream-Zweig aktualisieren,
+Der Fork steht auf `v0.2.20` (`73d4f4196`). Für ein Update: Upstream-Zweig aktualisieren,
 dann die Fork-Stellen nachtragen — `STRATA_D_FMTS` in
 `engine/src/kernels/cuda/iq_kernels.cu` (Typ-Liste, beide `#ifdef`-Zweige), die
 Handoff-Zeile (`hand_host`) in `engine/src/program/generate.cpp` falls Upstream die
