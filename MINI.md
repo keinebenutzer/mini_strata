@@ -89,9 +89,13 @@ Direkt:
 ```bash
 LD_LIBRARY_PATH=<libdir> ./build/strata --serve \
   --native ~/models/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf \
-  --max-context 13312 --prefill auto --mtp 2 \
+  --max-context 13312 --prefill 256 --mtp 2 \
   --cpu-threads 7 --expert-vram 0.3 --hybrid-rows 64
 ```
+
+(`--prefill auto` = 512 OOMt auf 4-GB-Karten mit Engine 0.1.66:
+„not enough VRAM for the hybrid experts' buffers and slots"; 256 ist das
+gemessene Rezept — die setup-Routine setzt es auf Karten bis 6,5 GB selbst.)
 
 oder über den Serve mit Config (`mini/serve-config-template.json`):
 

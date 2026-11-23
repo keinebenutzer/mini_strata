@@ -25,6 +25,11 @@ Das ist alles. Die Routine führt direkt zu unserem Modell
 
 Ohne `--yes` führt der interaktive Assistent durch dieselben Schritte
 (Größe, Kontext, Bilder werden gefragt, Empfehlungen vorselektiert).
+Auf Rechnern mit 16–31 GB RAM — den Zielrechnern dieses Forks — ist
+**Qwen3.6-35B-A3B UD-IQ2_XXS** die vorausgewählte Empfehlung; die
+Flash-Next-Größen, die dort nicht in den RAM passen, stehen weiterhin zur
+Auswahl. Auf Karten bis 6,5 GB VRAM schreibt die Routine `--prefill 256`
+in die Config (`auto` = 512 OOMt dort mit Engine 0.1.66).
 Nächster Start: einfach `./setup.sh` — es startet sofort.
 
 **Voraussetzungen:** NVIDIA-Karte (sm_75 oder neuer), CUDA-Compiler

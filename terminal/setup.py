@@ -9796,7 +9796,8 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     ok(f"tokenizer: {pack / 'tokenizer'}")
 
     step(7, "writing the start script")
-    args = ["--native", str(gguf), "--max-context", str(ctx), "--prefill", "auto", "--mtp", str(fam["mtp"])]
+    prefill = "256" if vram_gb <= 6.5 else "auto"   # fork: 0.1.66 OOMs on 4 GB cards with auto (512): "not enough VRAM for the hybrid experts' buffers and slots" (measured on a 4 GB A2000); 256 is the working recipe
+    args = ["--native", str(gguf), "--max-context", str(ctx), "--prefill", prefill, "--mtp", str(fam["mtp"])]
     if model == "UD-IQ2_XXS" and vram_gb <= 6.5 and "--expert-vram" not in args:
         args += ["--expert-vram", f"{max(vram_gb - 3.7, 0.3):.1f}"]   # the measured 4 GB recipe: the dense side keeps its room on the card, the experts run from RAM
     if a.vram_reserve_mib is not None:             # VRAM left free for other programs: the experts take that much less
@@ -11146,18 +11147,22 @@ def main() -> int:
     ram = ram_gb()
     cpu, avx2, avx512 = cpu_info()
     need = min(d["ram_gb"] for d in MODELS.values() if not d.get("mem_total"))   # Gyro counts VRAM + RAM: not a RAM floor
+    # fork: the smallest model this fork runs is the own-path 2-bit one (Qwen3.6-35B-A3B UD-IQ2_XXS, the experts
+    # from RAM, 16 GB) - not the Flash-Next Coder's 32 GB.  With the upstream floor alone the setup stopped on a
+    # 16 GB PC before the model menu: the fork's own model was never offered, never downloaded, never built.
+    need = min(need, min(d["ram_gb"] for f in OWN_PATH_FAMILIES.values() for d in f["models"].values()))
     low_ok = low_ram_fits("IQ1_M", ram, low_ram_vram(gpu)) and a.low_ram != "off"   # the smallest model, mapped
     if ram < need - 4 and not a.check and not low_ok:
-        # every model keeps ALL its experts in RAM (23+ GB); VRAM only holds a copy of the most-used ones, so a
-        # bigger GPU does not lower this.  The owner's rule: a stop by default, a risk the user can take (--model
-        # with --yes, or y)
-        confirm_risk(f"RAM: {ram:.0f} GB - the smallest model (the Coder) needs about {need} GB: Strata keeps all of "
-                     "the model's experts in RAM (23-50 GB, whatever the GPU), so the OS will page them from disk. "
-                     "Expect it to be very slow, and it may not start at all.", bool(a.model), a.yes,
-                     f"RAM: {ram:.0f} GB - the smallest model (the Coder) needs about {need} GB",
-                     "Strata keeps all of the model's experts in RAM (23-50 GB, whatever the GPU) and the GPU holds a "
-                     "copy of the most-used ones: it needs 32 GB of RAM or more (48 GB for the full model); --model "
-                     "NAME --yes installs one anyway")
+        # every Flash-Next model keeps ALL its experts in RAM (23+ GB); VRAM only holds a copy of the most-used
+        # ones, so a bigger GPU does not lower this.  The owner's rule: a stop by default, a risk the user can
+        # take (--model with --yes, or y)
+        confirm_risk(f"RAM: {ram:.0f} GB - the smallest model this fork runs (Qwen3.6-35B-A3B UD-IQ2_XXS, the "
+                     f"experts from RAM) needs about {need} GB; the Flash-Next sizes need 32 GB or more. Below "
+                     "that the OS pages the weights from disk: expect it to be very slow, and it may not start at all.",
+                     bool(a.model), a.yes,
+                     f"RAM: {ram:.0f} GB - the smallest model this fork runs needs about {need} GB",
+                     "the fork's own-path model needs 16 GB of RAM or more, the Flash-Next sizes 32 GB or more "
+                     "(48 GB for the full model); --model NAME --yes installs one anyway")
         warn(f"going on with {ram:.0f} GB of RAM, as you chose")
     ram_msg = (f"RAM: {ram:.0f} GB" if ram >= need - 4 else f"RAM: {ram:.0f} GB (less than the {need} GB the smallest model needs)"
                + ("; the GPU's VRAM makes up for it (the low-RAM mode)" if ram < need - 4 and low_ok else ""))
@@ -11206,6 +11211,14 @@ def main() -> int:
             else:
                 any_fits = any_fits or (model_fit_label(m, ram, gpu) == "fits" and not d.get("mem_total"))
             say(f"  {m:8s} needs ~{model_files_gb(m):.0f} GB of RAM + VRAM: {verdict}")
+        from strata_control import fit_label        # fork: the own-path sizes are what this fork runs on small cards - they are checked too
+        for f, fd in OWN_PATH_FAMILIES.items():
+            for m, md in fd["models"].items():
+                size = fd["sha256"][fd["file"].format(q=m)][0] / 1e9
+                verdict = fit_label.label(size, ram, low_ram_vram(gpu))
+                any_fits = any_fits or (verdict == "fits" and ram >= md["ram_gb"])
+                say(f"  {m:10s} {fd['title']}: {size:.1f} GB download, the experts from RAM: {verdict}"
+                    + ("" if ram >= md["ram_gb"] else f"   <- needs {md['ram_gb']} GB of RAM, you have {ram:.0f}"))
         if not any_fits:
             # #977: every size says "does not fit", so the verdict says so too (and the exit code, for scripts). It only
             # reports: --model NAME --yes still installs one anyway.
@@ -11233,6 +11246,11 @@ def main() -> int:
         tier = tier_pick(ram, low_ram_vram(gpu))
         cyan, reset = menu_colour("36")
         rec_fam = STRIX_HALO_FAMILY if strix_halo_recommends(gpu, ram) and STRIX_HALO_FAMILY in fams else             tier[0] if tier and tier[0] in fams else fams[0]
+        if tier is None and rec_fam not in {**OWN_PATH_FAMILIES, **HY4_FAMILIES}:   # fork: no Flash-Next size fits this PC - the 2-bit own-path model is the recommendation (its own size question then picks UD-IQ2_XXS by RAM)
+            for f in OWN_PATH_FAMILIES:
+                if any(ram >= m["ram_gb"] for m in OWN_PATH_FAMILIES[f]["models"].values()):
+                    rec_fam = f
+                    break
         for i, f in enumerate(fams, 1):
             d = FAMILIES[f]
             say(f"  {i}) {cyan}{d['title']:20s}{reset} {d['by']} - {d['about']}" + ("   [experimental]" if d.get("experimental") else "")
@@ -11243,7 +11261,8 @@ def main() -> int:
                 *(f for f in HY4_FAMILIES if hy4_offered(a))]       # Hy4-Flash: listed where an engine, and files or a source, exist (hy4_offered)
         for j, f in enumerate(rest, len(fams) + 1):    # families with an engine path of their own
             d = {**FAMILIES, **OWN_PATH_FAMILIES, **HY4_FAMILIES}[f]
-            say(f"  {j}) {cyan}{d['title']:20s}{reset} {d['by']} - {d['about']}   [new]" + (f"   ({FEED_UNAVAILABLE[f]['reason']})" if f in FEED_UNAVAILABLE else ""))
+            say(f"  {j}) {cyan}{d['title']:20s}{reset} {d['by']} - {d['about']}   [new]" + (f"   ({FEED_UNAVAILABLE[f]['reason']})" if f in FEED_UNAVAILABLE else "")
+                + ("   (recommended for this PC)" if f == rec_fam else ""))
         for u in FEED_UNAVAILABLE.values():            # a feed model this engine does not run: said, never offered (unless the owner's rule allows it, above)
             if not u.get("allowed"):
                 say(f"  -) {u['title']:20s} {u['by']} - {u['reason']}")
