@@ -28,6 +28,11 @@ public:
     bool run(const float* mixed, float* logits, void* stream, std::string& err) const;
     uint64_t weight_bytes() const { return bytes_; }
     bool loaded() const { return weights_ != nullptr; }
+    // mini_strata: der gesplittete head (peer_weights_ auf zweiten Karten) ist entfernt.
+    bool is_split() const { return false; }
+    bool gather_rows(const int32_t*, int64_t, int, uint8_t*, std::string& err) const {
+        err = "mini_strata: der gesplittete head ist entfernt"; return false;
+    }
     /// Plan v0.3 P6: the GGUF blocks, for the verify window's multi-column head.
     const void* weights() const { return weights_; }
     const void* scratch() const { return scratch_; }   ///< the activation scratch the head's GEMV reads (captured with the weights)
