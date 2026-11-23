@@ -6,7 +6,7 @@
     "--max-context",
     "13312",
     "--prefill",
-    "auto",
+    "256",
     "--mtp",
     "2",
     "--cpu-threads",
