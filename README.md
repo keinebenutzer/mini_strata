@@ -4,6 +4,18 @@
 > Basis ist Upstream [Niko1221/Strata](https://github.com/Niko1221/Strata) (MIT); der Fork fügt
 > 2-Bit-Expertenunterstützung für den q36-Pfad hinzu.
 
+> **Engine-Bau: der CUDA-Compiler muss gefunden werden.** Dieser Fork baut die Engine selbst (nur sein Code
+> nimmt die 2-Bit-Experten). `setup.sh` sucht `nvcc` an vier Stellen: PATH, `$CUDA_HOME`/`$CUDA_PATH`,
+> `/usr/local/cuda*` und `/opt/cuda*`. Ein aus dem Tarball ausgepacktes Toolkit — etwa `~/cuda-12.8/cuda-12.8` —
+> liegt daneben und wird nicht gefunden; es muss genannt werden:
+> `CUDA_HOME=$HOME/cuda-12.8/cuda-12.8 ./setup.sh --family qwen36 --model UD-IQ2_XXS --yes`
+> (oder der einzelne Compiler: `STRATA_NVCC=/pfad/zu/nvcc`).
+> **CUDA 13.0 ist nur für RTX 50 (sm_120) Pflicht** — für alle anderen Karten, auch sm_86, genügt CUDA ≥ 12.0
+> (nvcc 13.2.0/13.2.1 kompiliert die Kernel für sm_120 falsch, [Troubleshooting](docs/TROUBLESHOOTING.md)).
+> Meldet die Routine „no CUDA Toolkit found" und findet `apt` kein `cuda-toolkit-13-0`, ist meist NVIDIAs
+> apt-Quelle deaktiviert (`/etc/apt/sources.list.d/cuda-*.list.distUpgrade` nach einem Dist-Upgrade):
+> das vorhandene Toolkit per `CUDA_HOME` zu nennen ist dann der kürzere Weg.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="app/host/public/brand/strata-lockup-dark.svg">
