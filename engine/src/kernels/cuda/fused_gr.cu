@@ -32,9 +32,6 @@
 #include <vector>
 
 namespace strata::kernels {
-bool rdna_gr_enabled();
-void rdna_gr_read_multi(const FusedGrArgs* a, int n_tok, float* scratch, void* stream,
-                        unsigned long long* sb = nullptr, int si = 0);
 }  // namespace strata::kernels
 
 namespace strata::kernels {
@@ -4290,15 +4287,7 @@ static bool fused_gr_read_multi_slice(const FusedGrArgs* a, int n_tok, float* xn
         }
         return q8;
     }
-    if (rdna_gr_enabled()) {
-        rdna_gr_read_multi(m.a, n_tok, xn_scratch, stream, stamp_buf, stamp_i0);
-        const cudaError_t er = cudaGetLastError();
-        if (er != cudaSuccess) {
-            std::fprintf(stderr, "fused_gr_read_multi rdna: %s\n", cudaGetErrorString(er));
-            std::exit(1);
-        }
-        return q8;
-    }
+    // mini_strata: der rdna-Pfad (rdna_gr.cu) ist entfernt
     // the two-kernel read above (another summation order): STRATA_GR_V3=0 / 1, unset = gr_v3_default_on (a 12.0 card with > 13 GiB)
     static const int v3_env = [] { const char* v = std::getenv("STRATA_GR_V3"); return v != nullptr ? (std::atoi(v) != 0 ? 1 : 0) : -1; }();
     static int split3[64] = {};   // per device: 0 = not decided yet, 1 / 2 = column halves S, -1 = does not fit

@@ -25,8 +25,7 @@ macro(strata_quant_layer)
     target_compile_definitions(strata_quant PRIVATE STRATA_QUANT_X86_TIERS=1)
     if(MSVC)
       # MSVC contracts neither ggml-cpu's C nor these files' intrinsics (measured: 0 differences from its own ggml in all three flavours); the Windows bits
-      # differ from GCC's in the Q5_K and IQ1_S dots, see below.  Under clang-cl (MSVC frontend + Clang compiler), /arch:AVX512 enables Skylake-X only,
-      # so pass /clang:-mavx512vnni explicitly so dot_avx512.cpp emits VPDPBUSD.
+      # differ from GCC's in the Q5_K and IQ1_S dots, see below
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx2.cpp ${_sq}/src/quant/x86/act_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
       set_source_files_properties(${_sq}/src/quant/x86/dot_avx.cpp ${_sq}/src/quant/x86/act_avx.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
       if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")

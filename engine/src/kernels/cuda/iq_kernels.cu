@@ -5,7 +5,6 @@
 // MIT license, third_party/ggml/LICENSE).  The block structs and codebook grids come from its ggml-common.h,
 // included unchanged.
 #include "strata/kernels/iq_kernels.hpp"
-#include "strata/kernels/nvfp4_decode_sm120.hpp"
 #include "strata/core/defaults_026.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/sm75_series.hpp"
@@ -7091,16 +7090,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     if (L.n_ff % 32 != 0) { std::fprintf(stderr, "native_expert_grouped: n_ff %lld\n", (long long) L.n_ff); std::exit(1); }
     // Blackwell sm_120/sm_121 Tensor Core NVFP4 grouped verify (T >= 2, cap_entries > 10):
     // single-token T=1 (cap_entries <= 10) stays on sub-warp row_dot_20_sub8 to avoid m16n8k16 N=8 padding.
-    if (!g_grouped_v1 && cap_entries > 10 && L.gu_type == 40 && L.d_type == 40 && !L.gu_nib && L.had_block == 0 && g_exp_phase == 0 &&
-        nvfp4_decode_sm120_available()) {
-        const size_t f0 = (size_t) cap_entries * (size_t) L.n_ff * sizeof(float);
-        const size_t fa0 = (f0 + 255) & ~(size_t) 255;
-        void* hq_ptr = (uint8_t*) scratch + 3 * fa0;
-        if (nvfp4_decode_sm120_grouped(L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
-                                       cap_groups, cap_entries, x_q8_1, hq_ptr, out, stream)) {
-            return;
-        }
-    }
+    // mini_strata: der NVFP4 sm_120/sm_121 Tensorcore-Pfad ist entfernt (nvfp4_decode_sm120.cu raus)
     // (OWN-I8: this fallback no longer hands its calls to native_expert_i8: that kernel reads its own activation image, native_expert_i8_quantize's, and this call's rows are q8_1
     //  blocks.  The prompt path's MMQ groups, where the kernel was measured, quantize the image themselves.)
     cudaStream_t s = (cudaStream_t) stream;

@@ -33,7 +33,6 @@
 #include "strata/kernels/fused_gr.hpp"   // fused_gr_check, called early on an integrated gfx11 (kfd_quiet.hpp, LOAD)
 #endif
 #include "strata/core/page_cache_drop.hpp"
-#include "strata/core/gfx11_extra.hpp"
 #include "strata/core/gfx12_chunk.hpp"
 #include "strata/core/nv_chunk.hpp"
 #include "strata/core/nv_defaults.hpp"
@@ -74,7 +73,6 @@
 #include "strata/core/layout.hpp"
 #include "strata/core/session.hpp"
 #include "strata/core/weights.hpp"
-#include "strata/prefill/moe_fp4_tc.hpp"
 #include "strata/quant/nvfp4_recipe.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/cpu/expert.hpp"
@@ -5218,7 +5216,7 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (any_nvfp4_exp) {
-                    strata::prefill::fp4_tc::set_model_has_input_scale(!missing_input_scale);
+                    (void) missing_input_scale;   // mini_strata: der fp4-Tensorcore-Pfad ist raus (moe_fp4_tc entfernt)
                 }
             }
         } catch (const std::exception& e) {

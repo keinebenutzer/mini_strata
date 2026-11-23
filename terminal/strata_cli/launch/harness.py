@@ -101,16 +101,10 @@ def _is_hy4(t: Target) -> bool:
     return (t.model or "").strip().lower().startswith("hy4-flash")
 
 
-def _is_inkling(t: Target) -> bool:
-    return (t.model or "").strip().lower().startswith("inkling-2-mini")
-
-
 def _display_name(t: Target) -> str:
     m = (t.model or "").lower()
     if m.startswith("hy4-flash"):
         return "Tencent Hy4-Flash (Strata, local)"
-    if m.startswith("inkling-2-mini"):
-        return "Inkling-2-Mini (Strata, local)"
     if m.startswith("qwen3.6") or m.startswith("qwen36"):
         return "Qwen3.6-35B-A3B (Strata, local)"
     return "Qwen3.8-Flash-Next (Strata, local)"
@@ -120,25 +114,10 @@ def opencode_file(t: Target) -> str:
     return _j({"$schema": "https://opencode.ai/config.json", "model": f"strata/{t.model}",
                "compaction": {"auto": True, "buffer": max(1024, t.input_limit - compact_at(t))},
                "share": "disabled",
-               "providers": {"strata": {"package": "@opencode/ai/providers/openai-compatible", "name": "Strata (local)",
-                                        "settings": {"baseURL": t.base, "apiKey": t.key},
-                                        "models": {t.model: {
-                                            "name": _display_name(t),
-                                            "type": "chat",
-                                            "capabilities": {
-                                                "tools": True,
-                                                "input": ["text"],
-                                                "output": ["text"],
-                                                "reasoning": {"supported": not _is_inkling(t), "effort": ["low", "medium", "high"],
-                                                              "toggle": not _is_inkling(t)},
-                                            },
-                                            "compatibility": {"reasoningField": "reasoning_content"},
-                                            "variants": [
-                                                {"id": "low", "settings": {"reasoningEffort": "low"}, "body": {"reasoning_budget_tokens": 2048}},
-                                                {"id": "none", "body": {"reasoning_effort": "none"}},
-                                                {"id": "budget", "body": {"reasoning_budget_tokens": 4096}},
-                                            ],
-                                            "limit": {"context": t.context, "input": t.input_limit, "output": t.output_cap}}}}}})
+               "provider": {"strata": {"npm": "@ai-sdk/openai-compatible", "name": "Strata (local)",
+                                       "options": {"baseURL": t.base, "apiKey": t.key},
+                                       "models": {t.model: {"name": _display_name(t), "tool_call": True, "reasoning": True,
+                                                            "limit": {"context": t.context, "input": t.input_limit, "output": t.output_cap}}}}}})
 
 
 def codex_file(t: Target) -> str:
@@ -168,11 +147,6 @@ def claude_file(t: Target) -> str:
 
 
 def omp_models(t: Target) -> str:
-    if _is_inkling(t):
-        return ("providers:\n  strata:\n    baseUrl: " + t.base + "\n    api: openai-completions\n    auth: none\n    compat:\n"
-                "      supportsDeveloperRole: false\n    models:\n      - id: " + t.model + "\n        name: " + _display_name(t) + "\n"
-                "        reasoning: false\n        input: [text]\n        contextWindow: " + str(t.context) + "\n        maxTokens: " + str(t.output_cap) + "\n"
-                "        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}\n")
     efforts = "[high, max]" if _is_hy4(t) else "[minimal, low, medium, high]"
     default_level = "high" if _is_hy4(t) else "medium"
     return ("providers:\n  strata:\n    baseUrl: " + t.base + "\n    api: openai-completions\n    auth: none\n    compat:\n"
@@ -183,7 +157,7 @@ def omp_models(t: Target) -> str:
 
 
 def omp_config(t: Target) -> str:
-    level = "off" if _is_inkling(t) else ("high" if _is_hy4(t) else "medium")
+    level = "high" if _is_hy4(t) else "medium"
     return ("modelRoles:\n  default: strata/" + t.model + f"\ndefaultThinkingLevel: {level}\ncompaction:\n  enabled: true\n  thresholdTokens: "
             + str(compact_at(t)) + "\n  keepRecentTokens: 4000\n  methodOrder:\n    - soft\n  idleEnabled: false\nsetupVersion: 2\n")
 
@@ -191,13 +165,13 @@ def omp_config(t: Target) -> str:
 def pi_models(t: Target) -> str:
     return _j({"providers": {"strata": {"baseUrl": t.base, "api": "openai-completions", "apiKey": t.key,
                                         "compat": {"supportsDeveloperRole": False, "supportsReasoningEffort": False},
-                                        "models": [{"id": t.model, "name": _display_name(t), "reasoning": not _is_inkling(t),
+                                        "models": [{"id": t.model, "name": _display_name(t), "reasoning": True,
                                                     "input": ["text"], "contextWindow": t.context, "maxTokens": t.output_cap,
                                                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}]}}})
 
 
 def pi_settings(t: Target) -> str:
-    level = "off" if _is_inkling(t) else ("high" if _is_hy4(t) else "medium")
+    level = "high" if _is_hy4(t) else "medium"
     return _j({"defaultProvider": "strata", "defaultModel": t.model, "defaultThinkingLevel": level,
                "compaction": {"enabled": True, "reserveTokens": max(1024, t.context - compact_at(t)), "keepRecentTokens": 4000}})
 
@@ -211,7 +185,7 @@ def openclaw_file(t: Target) -> str:
     return _j({"models": {"mode": "merge", "providers": {"strata": {
         "baseUrl": t.base, "apiKey": t.key, "api": "openai-completions",
         "models": [{"id": t.model, "name": f"{t.model} (Strata)", "contextWindow": t.context,
-                    "contextTokens": int(t.context * 23192 / 32768), "maxTokens": t.output_cap, "reasoning": not _is_inkling(t), "input": ["text"],
+                    "contextTokens": int(t.context * 23192 / 32768), "maxTokens": t.output_cap, "reasoning": True, "input": ["text"],
                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}]}}},
         "agents": {"defaults": {"model": {"primary": f"strata/{t.model}"},
                                 "compaction": {"enabled": True, "notifyUser": True, "keepRecentTokens": 4000}}}})
