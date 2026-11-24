@@ -29,7 +29,7 @@ Auf Rechnern mit 16–31 GB RAM — den Zielrechnern dieses Forks — ist
 **Qwen3.6-35B-A3B UD-IQ2_XXS** die vorausgewählte Empfehlung; die
 Flash-Next-Größen, die dort nicht in den RAM passen, stehen weiterhin zur
 Auswahl. Auf Karten bis 6,5 GB VRAM schreibt die Routine `--prefill 256`
-in die Config (`auto` = 512 OOMt dort mit Engine 0.1.66).
+in die Config (`auto` = 512 OOMt dort mit Engine 0.1.67).
 Nächster Start: einfach `./setup.sh` — es startet sofort.
 
 **Voraussetzungen:** NVIDIA-Karte (sm_75 oder neuer), CUDA-Compiler
@@ -68,6 +68,16 @@ nohup python3 terminal/serve/server.py --engine strata --config meine-config.jso
 
 Läuft es nicht: die Engine-Logdatei (Feld `log` in der Config) lesen — sie nennt
 die entscheidende Zeile, nicht der Wrapper-Traceback.
+
+## KV-Modus turbo3
+
+Der Engine-Start kennt neben `q4_0` das 3-Bit-uniforme KV-Format `--kv turbo3`
+(8 Stufen, 14 Byte pro 32-Block, 448 Byte pro Zelle). Es senkt den KV-Speicher auf
+0,44 KiB/Token/Layer statt 0,56 bei `q4_0` (rund 21 % Ersparnis) und ist damit der
+Knopf für das maximale Kontextfenster. Auf klapp (RTX A2000 4 GB,
+Qwen3.6-35B-A3B-UD-IQ2_XXS, Kontext 32768) misst es ohne MTP 34,9 Token/s; mit MTP2
+ist es derzeit im Nachteil (17–20 Token/s). Produktivstandard bleibt daher
+`q4_0` mit MTP2.
 
 ## Upstream-Update
 

@@ -1,7 +1,7 @@
 # Mini-Strata — Strata auf 4-GB-Grafikkarten
 
 Ein Fork von [Strata](https://github.com/Niko1221/Strata) (MIT), geschnitten auf
-**v0.2.20 (Engine 0.1.66)**, für Rechner mit kleiner VRAM-Karte und viel Arbeitsspeicher:
+**v0.2.21 (Engine 0.1.67)**, für Rechner mit kleiner VRAM-Karte und viel Arbeitsspeicher:
 ein 35-Milliarden-MoE-Modell läuft lokal auf einer 4-GB-Grafikkarte.
 
 ## Was hier anders ist
@@ -19,19 +19,31 @@ ab 4-Bit an. Sonst ändert der Fork nichts; alles andere ist Upstream.
 ## So fühlt es sich an (gemessen)
 
 Maschine: RTX A2000 Laptop 4 GB (sm_86), 30 GB RAM, 8 Kerne, CUDA 12.8.
-Modell: `Qwen3.6-35B-A3B-UD-IQ2_XXS` mit MTP-Block, Kontext 13312.
+Produktivstandard: `Qwen3.6-35B-A3B-UD-IQ2_XXS` mit MTP-Block, q4_0-KV mit MTP2,
+Kontext 32768.
 
 | Messgröße | Wert |
 |---|---|
-| Prefill | ~99 Token/s |
-| Decode, kurzer Prompt | 48 Token/s |
-| Decode, 8k-Prompt | 19 Token/s |
-| GPU-Belegung | ~1,7 GiB Modell + Puffer (Karte bleibt unter 4 GiB) |
-| Experten im RAM | 10,1 GiB pinned host memory |
+| Modell | Qwen3.6-35B-A3B UD-IQ2_XXS (12,4 GB, mq8-Gewichte, MTP-Experten) |
+| Kontext | 32768 |
+| Prefill | 256 (Batch; `auto` = 512 OOMt auf 4 GB) |
+| Decode (q4_0 + MTP2) | 35–38 Token/s |
 
 Die Experten liegen komplett im Arbeitsspeicher; die Karte hält Dichte
 (Embeddings, Attention, Output) und die Puffer. Entscheidend ist daher **freier RAM
 (ab ~16 GB) und RAM-Bandbreite**, nicht VRAM.
+
+## KV-Modus turbo3 (neu)
+
+Der q36-Pfad kennt neben q4_0 jetzt ein 3-Bit-uniformes KV-Format, wählbar beim
+Engine-Start mit `--kv turbo3` (8 Stufen, 14 Byte pro 32-Block, 448 Byte pro Zelle).
+Es senkt den KV-Speicher auf **0,44 KiB/Token/Layer** statt 0,56 bei q4_0
+(rund 21 % Ersparnis) — der Knopf für das maximale Kontextfenster.
+
+Gemessen auf klapp (RTX A2000 4 GB, Qwen3.6-35B-A3B-UD-IQ2_XXS, Kontext 32768):
+Decode ohne MTP 34,9 Token/s. Mit MTP2 ist turbo3 derzeit im Nachteil
+(17–20 Token/s). **Produktivstandard bleibt daher q4_0 mit MTP2**; turbo3 ist die
+Wahl, wenn das Kontextfenster wichtiger ist als der letzte Durchsatz.
 
 ## Voraussetzungen
 
@@ -89,11 +101,11 @@ Direkt:
 ```bash
 LD_LIBRARY_PATH=<libdir> ./build/strata --serve \
   --native ~/models/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf \
-  --max-context 13312 --prefill 256 --mtp 2 \
+  --max-context 32768 --prefill 256 --mtp 2 \
   --cpu-threads 7 --expert-vram 0.3 --hybrid-rows 64
 ```
 
-(`--prefill auto` = 512 OOMt auf 4-GB-Karten mit Engine 0.1.66:
+(`--prefill auto` = 512 OOMt auf 4-GB-Karten mit Engine 0.1.67:
 „not enough VRAM for the hybrid experts' buffers and slots"; 256 ist das
 gemessene Rezept — die setup-Routine setzt es auf Karten bis 6,5 GB selbst.)
 
@@ -134,7 +146,7 @@ erwartete Stelle kopieren.
 
 ## Stand halten
 
-Der Fork steht auf `v0.2.20` (`73d4f4196`). Für ein Update: Upstream-Zweig aktualisieren,
+Der Fork steht auf `v0.2.21`. Für ein Update: Upstream-Zweig aktualisieren,
 dann die Fork-Stellen nachtragen — `STRATA_D_FMTS` in
 `engine/src/kernels/cuda/iq_kernels.cu` (Typ-Liste, beide `#ifdef`-Zweige), die
 Handoff-Zeile (`hand_host`) in `engine/src/program/generate.cpp` falls Upstream die

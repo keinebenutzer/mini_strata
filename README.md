@@ -1,8 +1,9 @@
 > **Mini-Strata Fork.** Diese Variante bringt Strata auf 4-GB-Grafikkarten:
-> Qwen3.6-35B-A3B (MoE, 35 Mrd.) mit Experten im Arbeitsspeicher — gemessen 48 Token/s
-> Decode auf einer RTX A2000 Laptop 4 GB. Alles dazu: [MINI.md](MINI.md) · Ablauf: [LESEN.md](LESEN.md).
-> Basis ist Upstream [Niko1221/Strata](https://github.com/Niko1221/Strata) (MIT); der Fork fügt
-> 2-Bit-Expertenunterstützung für den q36-Pfad hinzu.
+> Qwen3.6-35B-A3B (MoE, 35 Mrd.) mit Experten im Arbeitsspeicher — gemessen 35–38 Token/s
+> Decode (q4_0 mit MTP2) auf einer RTX A2000 Laptop 4 GB. Alles dazu: [MINI.md](MINI.md) ·
+> Ablauf: [LESEN.md](LESEN.md).
+> Basis ist Upstream [Niko1221/Strata](https://github.com/Niko1221/Strata) v0.2.21
+> (Engine 0.1.67, MIT); der Fork fügt 2-Bit-Expertenunterstützung für den q36-Pfad hinzu.
 
 <p align="center">
   <picture>
@@ -151,15 +152,6 @@ Run **`strata connect`** to see setup instructions for your tool. [Connection gu
 
 [All guides](docs) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Report a bug](https://github.com/Niko1221/Strata/issues/new/choose) ·
 [Benchmarks](docs/COMMUNITY_BENCHMARKS.md) · [How it works](docs/HOW_IT_WORKS.md) · [Contribute](.github/CONTRIBUTING.md)
-
-## Sponsors of Strata
-
-<!-- Sponsor logos: one centred row with room for five, each 130 px wide. Add the next sponsor after Olares, with &nbsp;&nbsp;&nbsp;&nbsp; between two logos. -->
-<p align="center">
-  <a href="https://heylinger.com"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/sponsors/linger-logo-white.svg"><img src="docs/media/sponsors/linger-logo-color.svg" alt="Linger" title="Linger" width="130" align="middle"></picture></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://www.olares.com/one"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/sponsors/olares-logo-white.svg"><img src="docs/media/sponsors/olares-logo-color.svg" alt="Olares" title="Olares" width="130" align="middle"></picture></a>
-</p>
 
 ## Support Strata
 
