@@ -29,6 +29,12 @@ struct QsaAttnPools {
     const uint16_t* v_scale = nullptr;
     const uint8_t* k_q4 = nullptr;      ///< q4_0 block_q4_0 [page][kv_head][page_size][head_dim / 32 * 18]
     const uint8_t* v_q4 = nullptr;
+    const uint8_t* k_turbo = nullptr;   ///< turbo2 block_turbo2 [page][kv_head][page_size][head_dim / 32 * 10] (kv_turbo.hpp)
+    const uint8_t* v_turbo = nullptr;
+    const uint8_t* k_turbo3 = nullptr;  ///< turbo3 block_turbo3 [page][kv_head][page_size][head_dim / 32 * 14] (kv_turbo3.hpp)
+    const uint8_t* v_turbo3 = nullptr;
+    /// k3v8 (kv_k3v8.hpp, attn mode 6): K rides k_turbo3 above, V rides v_q + v_scale below - the pools are
+    /// shared with the single-format modes, the combination is what makes it a mode of its own.
     const int32_t* page_table = nullptr;
 };
 

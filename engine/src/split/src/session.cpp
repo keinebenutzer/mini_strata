@@ -414,14 +414,22 @@ Finish Session::generate(int max_new, const Sampling& s, const std::function<voi
     // ROUND_MS, a verify row DRAFT_ROW_MS more and a draft call after d1 DRAFT_CALL_MS (Q4, lab, 2026-10-25, prose with
     // K fixed at 1 / 2 / 3 / 4: 12.47 / 14.76 / 16.60 / 18.34 ms a round). FNX_DRAFT_ADAPT=0: always K
     const bool adapt = env_int("FNX_DRAFT_ADAPT", 1) != 0;
-    constexpr double ROUND_MS = 11.2, DRAFT_ROW_MS = 1.3, DRAFT_CALL_MS = 0.65, DECAY = 0.97;
+    // The costs above are the lab card's; on a machine whose rounds cost differently the chain has no way to say
+    // so and picks lengths past its own break-even.  Name them per install (measured: a round's base and the step
+    // a further verify row adds).
+    const double round_ms = env_num("FNX_DRAFT_ROUND_MS", 11.2), draft_row_ms = env_num("FNX_DRAFT_ROW_MS", 1.3),
+                 draft_call_ms = env_num("FNX_DRAFT_CALL_MS", 0.65);
+    constexpr double DECAY = 0.97;
+    if (std::getenv("FNX_DRAFT_ROUND_MS") || std::getenv("FNX_DRAFT_ROW_MS"))
+        std::fprintf(stderr, "fnx: draft chain costs: round %.2f ms, a verify row %.2f, a draft call %.2f\n",
+                     round_ms, draft_row_ms, draft_call_ms);
     std::vector<double> tried(MAXT, 1.0), stood(MAXT, 0.7);   // a prior of 70% at every position
     auto chain_len = [&](double call_ms) {
         int best = K_;
         double best_rate = -1.0, expect = 1.0, reach = 1.0;
         for (int k = 1; k <= K_; ++k) {   // at least d1: its acceptance stays measured (it pays above ~8% anyway)
             reach *= stood[(size_t) k - 1] / tried[(size_t) k - 1], expect += reach;
-            const double rate = expect / (ROUND_MS + k * DRAFT_ROW_MS + std::max(0, k - 1) * call_ms);
+            const double rate = expect / (round_ms + k * draft_row_ms + std::max(0, k - 1) * call_ms);
             if (rate > best_rate) best_rate = rate, best = k;
         }
         return best;
@@ -608,7 +616,7 @@ Finish Session::generate(int max_new, const Sampling& s, const std::function<voi
         // the MTP chain: each draft from the draft layer's own row for the one before
         // every 4th chain one draft longer, so the position past the chosen length stays measured (the full K every 4th
         // chain cost prose ~0.9 ms a round)
-        const int k = !adapt ? K_ : std::min(K_, chain_len(DRAFT_CALL_MS) + (++mtp_chains % 4 ? 0 : 1));   // every 16th: code stuck at ~3
+        const int k = !adapt ? K_ : std::min(K_, chain_len(draft_call_ms) + (++mtp_chains % 4 ? 0 : 1));   // every 16th: code stuck at ~3
         mtp_round = true;
         drafts = {d1}, qs = {std::move(q1)};
         for (int j = 1; j < k; ++j) {

@@ -1,5 +1,7 @@
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/kernels/kv_turbo.hpp"
+#include "strata/kernels/kv_turbo3.hpp"
 #include "conversation_checked.hpp"
 #include "conversation_copy.hpp"
 #include "conversation_trace.hpp"
@@ -39,6 +41,10 @@ bool valid_extent(const QsaState& st, int64_t upto, std::string& error) {
 
 bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index, Layout& l, std::string& error) {
     if (!valid_extent(st, upto, error)) return false;
+    if (st.kv_k3v8 && (st.kv_mode == 2 || st.kv_q4 || st.kv_int8 || st.kv_turbo3)) {   // k3v8: no ring, distinct flags
+        error = "conversation snapshot: k3v8 cannot be a ring and needs distinct format flags";
+        return false;
+    }
     if (st.kv_hybrid && (st.kv_mode == 2 || st.kv_q4 || st.kv_int8)) {   // a streamed one reads its host copy
         error = "conversation snapshot: hybrid K8V4 cannot be a ring and needs distinct format flags";
         return false;
@@ -46,21 +52,27 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     const auto s = strata::kernels::qsa_real_shapes();
     const bool int8_keys = st.kv_int8 || st.kv_hybrid;
     if (g.n_head_kv <= 0 || g.head_dim <= 0 || g.head_dim > INT32_MAX || g.idx_key_dim <= 0 ||
-        (st.kv_q4 && g.head_dim % 32) || (int8_keys && !st.kv_q4 && g.head_dim % 64)) {
+        (st.kv_q4 && g.head_dim % 32) || (st.kv_turbo2 && g.head_dim % 32) || (st.kv_turbo3 && g.head_dim % 32) ||
+        (st.kv_k3v8 && g.head_dim % 64) ||   // k3v8: turbo3 K groups (32) and int8 V groups (64) both divide 64
+        (int8_keys && !st.kv_q4 && g.head_dim % 64)) {
         error = "conversation snapshot: invalid K/V geometry";
         return false;
     }
     const int64_t cells = ((upto + s.page_size - 1) / s.page_size) * s.page_size;
     const size_t per = st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)
-                              : (size_t) g.head_dim * (int8_keys ? 1 : 2);
+                     : st.kv_turbo2 ? (size_t) strata::kernels::kv_turbo_bytes_per_head((int) g.head_dim)
+                     : st.kv_turbo3 ? (size_t) strata::kernels::kv_turbo3_bytes_per_head((int) g.head_dim)
+                     : st.kv_k3v8 ? (size_t) strata::kernels::kv_turbo3_bytes_per_head((int) g.head_dim)
+                     : (size_t) g.head_dim * (int8_keys ? 1 : 2);
     // Include the moving spare row, not only completed blocks. The checkpoint
     // restore reconstructs that row when rewinding to an earlier prefix.
     const int64_t pooled = index && upto > 0 ? upto / s.idx_block + 1 : 0;
     // Format 3 identifies snapshot K8V4 only; never pass it to the block movers.  Rotated INT8 K/V (#293,
     // STRATA_KV_ROT=1) is another format too (+16): its bytes mean nothing to a state that does not rotate, so a
     // snapshot or prompt checkpoint taken with the rotation never restores into one without it, nor the reverse.
-    // (Q4_0 is always rotated: nothing to tell apart; without the rotation the format is the one it always was.)
-    const int rotated = st.kv_rot && !st.kv_q4 && !st.kv_hybrid ? 16 : 0;
+    // (Q4_0, turbo2 and turbo3 are always rotated: nothing to tell apart; without the rotation the format is the
+    // one it always was.)
+    const int rotated = st.kv_rot && !st.kv_q4 && !st.kv_turbo2 && !st.kv_turbo3 && !st.kv_k3v8 && !st.kv_hybrid ? 16 : 0;
     l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated, cells, pooled, s.page_size, 0, 0, 0, 0, 0};
     using conversation_detail::product;
     if (!product(l.data, {(uint64_t) cells, (uint64_t) g.n_head_kv, per}) ||
@@ -80,6 +92,13 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
         }
         l.value_scales = 0;
     }
+    if (st.kv_k3v8) {   // k3v8: K is turbo3 (its scales ride in the blocks), V is int8 codes + fp16 scales
+        if (!product(l.value_data, {(uint64_t) cells, (uint64_t) g.n_head_kv, (uint64_t) g.head_dim}) ||
+            !product(l.value_scales, {(uint64_t) cells, (uint64_t) g.n_head_kv, (uint64_t) (g.head_dim / 64) * 2})) {
+            error = "conversation snapshot: k3v8 V byte count overflow";
+            return false;
+        }
+    }
     return true;
 }
 
@@ -90,6 +109,15 @@ std::array<void*, 5> pools(const QsaState& st, bool resident = false) {
                 nullptr, st.idx_pooled};
     if (st.kv_q4)
         return {host ? st.host.k_q4 : st.k_q4, host ? st.host.v_q4 : st.v_q4, nullptr, nullptr, st.idx_pooled};
+    if (st.kv_turbo2)
+        return {host ? st.host.k_turbo : st.k_turbo, host ? st.host.v_turbo : st.v_turbo, nullptr, nullptr,
+                st.idx_pooled};
+    if (st.kv_k3v8)
+        return {host ? st.host.k_turbo3 : st.k_turbo3, host ? st.host.v_q : st.v_q, nullptr,
+                host ? st.host.v_scale : st.v_scale, st.idx_pooled};
+    if (st.kv_turbo3)
+        return {host ? st.host.k_turbo3 : st.k_turbo3, host ? st.host.v_turbo3 : st.v_turbo3, nullptr, nullptr,
+                st.idx_pooled};
     if (st.kv_int8)
         return {host ? st.host.k_q : st.k_q, host ? st.host.v_q : st.v_q,
                 host ? st.host.k_scale : st.k_scale, host ? st.host.v_scale : st.v_scale, st.idx_pooled};
@@ -113,7 +141,10 @@ bool valid(const QsaState& st, const Layout& l, int64_t upto, std::string& error
         }
     }
     if (st.kv_mode == 2 && (!st.page_table ||
-        (st.kv_q4 ? !st.k_q4 || !st.v_q4 : st.kv_int8 ? !st.k_q || !st.v_q || !st.k_scale || !st.v_scale
+        (st.kv_q4 ? !st.k_q4 || !st.v_q4
+                  : st.kv_turbo2 ? !st.k_turbo || !st.v_turbo
+                  : st.kv_turbo3 ? !st.k_turbo3 || !st.v_turbo3
+                  : st.kv_int8 ? !st.k_q || !st.v_q || !st.k_scale || !st.v_scale
                                                     : !st.k_pool || !st.v_pool))) {
         error = "conversation snapshot: invalid draft ring";
         return false;

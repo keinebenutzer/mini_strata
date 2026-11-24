@@ -31,7 +31,12 @@ GIB = 2 ** 30
 BYTES_PER_TOKEN = 11 * 2 * 256 * 2 * 4 + 2 * 256 * 2 * 2      # 45,056 + 2,048 = 47,104
 STATE_GIB = 0.07e9 / GIB
 BASE_GIB = 8.55                                                # the one figure a measured start replaces ("5070 calibration owed")
-HYBRID_MIN_GIB = {"UD-Q4_K_XL": 1256 / 1024, "UD-Q6_K_XL": 1760 / 1024, "Q8_0": 1760 / 1024}
+HYBRID_MIN_GIB = {"UD-Q4_K_XL": 1256 / 1024, "UD-Q6_K_XL": 1760 / 1024, "Q8_0": 1760 / 1024,
+                  "UD-IQ2_XXS": 1256 / 1024}
+# fork: the 2-bit size is expert-resident on bigger cards (measured: dense side 1.7 GiB +
+# the 10.06 GiB of experts the engine pins first + CUDA/buffers ~0.5) - the strict 8.55
+# of the K-quant field logs and the small hybrid slice do not describe it
+BASE_GIB_MODEL = {"UD-IQ2_XXS": 12.3}
 FAMILY_NAME = "qwen3.6-35b-a3b"                                # setup.py OWN_PATH_FAMILIES['qwen36']['name'], the config's model_name prefix
 DEFAULT_CONTEXT = 131072                                       # 128K (owner, 2026-11-01): the mark never goes above it
 MENU = [8192, 32768, 65536, 131072, 204800, 262144]           # setup's own-path context menu (setup.own_path_contexts(); a test keeps them equal)
@@ -40,7 +45,7 @@ MENU = [8192, 32768, 65536, 131072, 204800, 262144]           # setup's own-path
 def fixed_gib(model: str | None) -> float | None:
     """What the card holds before the context for this size (GiB), None for a size without figures."""
     h = HYBRID_MIN_GIB.get(str(model or ""))
-    return None if h is None else BASE_GIB + h + STATE_GIB
+    return None if h is None else BASE_GIB_MODEL.get(str(model or ""), BASE_GIB) + h + STATE_GIB
 
 
 def inputs(name: str | None, model: str | None) -> dict | None:

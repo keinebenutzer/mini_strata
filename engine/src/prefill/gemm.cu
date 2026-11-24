@@ -16,7 +16,6 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #if !defined(__HIPCC__)
-#include "strata/prefill/dense_fp4_tc.hpp"
 #endif
 #if !defined(__HIPCC__) && defined(STRATA_CUBLASLT_MXFP8)
 #include "gemm_mxfp8.cuh"
@@ -1537,10 +1536,7 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
     if (beta == 0.0f && (ldx == 0 || ldx == K) && native_mmq(X, ggml_type, W_blocks, Y, T, N, K, ldy)) return;
 #endif
 #if !defined(__HIPCC__)
-    if (ggml_type == 40 && (ldx == 0 || ldx == K) &&
-        strata::prefill::dense_fp4_tc::gemm_f16_nvfp4(X, W_blocks, Y, T, N, K, ldy, beta, stream_)) {
-        return;
-    }
+    // mini_strata: der dense fp4-Tensorcore-Pfad (ggml_type 40, dense_fp4_tc) ist entfernt.
 #endif
 #if !defined(__HIPCC__) && defined(STRATA_CUBLASLT_MXFP8)
     if ((ldx == 0 || ldx == K) && T >= 128 && N >= 128 && K >= 128 && (N & 15) == 0 && (K & 31) == 0 &&

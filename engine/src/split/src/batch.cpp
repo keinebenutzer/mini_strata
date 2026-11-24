@@ -84,6 +84,18 @@ BatchDecoder::BatchDecoder(Engine& e, int K, int lookup_k, std::vector<int> eos,
     horizon_ = (double) horizon;
     if (e_.warm_capture_ms > 0.0) capture_ms_ = e_.warm_capture_ms;   // FNX_PRECAP: the capture's measured cost, not the default
     trace_ = env_int("FNX_BATCH_TRACE", 0) != 0;
+    // RowCost's numbers are the lab card's (batch_plan.hpp: "Q4, lab, 2026-10-25").  A machine whose rows cost
+    // differently has no way to say so, and the plan then drafts past its own break-even.  Name them per install.
+    cost_.round_ms = env_num("FNX_BATCH_ROUND_MS", cost_.round_ms);
+    cost_.row_lo = env_num("FNX_BATCH_ROW_LO", cost_.row_lo);
+    cost_.row_hi = env_num("FNX_BATCH_ROW_HI", cost_.row_hi);
+    cost_.call_ms = env_num("FNX_BATCH_CALL_MS", cost_.call_ms);
+    cost_.chain_ms = env_num("FNX_BATCH_CHAIN_MS", cost_.chain_ms);
+    cost_.group_ms = env_num("FNX_BATCH_GROUP_MS", cost_.group_ms);
+    if (const long long k = env_int("FNX_BATCH_KNEE", cost_.knee); k >= 1 && k < MAXT) cost_.knee = (int) k;
+    if (std::getenv("FNX_BATCH_ROUND_MS") || std::getenv("FNX_BATCH_ROW_LO") || std::getenv("FNX_BATCH_ROW_HI"))
+        std::fprintf(stderr, "fnx: batch plan costs: round %.2f ms, a row %.2f to the %d'th then %.2f, call %.2f, chain %.2f, group %.2f\n",
+                     cost_.round_ms, cost_.row_lo, cost_.knee, cost_.row_hi, cost_.call_ms, cost_.chain_ms, cost_.group_ms);
 }
 
 bool BatchDecoder::is_eos(int t) const { return std::find(eos_.begin(), eos_.end(), t) != eos_.end(); }

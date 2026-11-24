@@ -64,9 +64,9 @@ def _parallel(value: str) -> int:
     try:
         p = int(value)
     except ValueError:
-        raise argparse.ArgumentTypeError(f"'{value}' is not a number of requests. Use 1 to 64, or leave it out to fit your card.") from None
-    if not 1 <= p <= 64:
-        raise argparse.ArgumentTypeError(f"{p} requests at once is outside what the engine can do. Use 1 to 64.")
+        raise argparse.ArgumentTypeError(f"'{value}' is not a number of requests. Use 1 to 8, or leave it out to fit your card.") from None
+    if not 1 <= p <= 8:
+        raise argparse.ArgumentTypeError(f"{p} requests at once is outside what the engine can do. Use 1 to 8.")
     return p
 
 
@@ -89,7 +89,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                    help="with --data-dir: move the models you already have into the new folder. Without it nothing is moved: your models stay "
                         "where they are and stay usable, and the new folder gets the new downloads")
     g.add_argument("--context", type=_context, metavar="SIZE", help="how much text it remembers at once: 32k, 64k, 128k, 256k or a number of tokens")
-    g.add_argument("--kv", type=_choice("a memory format", S.KV_MODES), metavar="FORMAT", help="conversation memory format: int8 (default), q4_0 (half the memory), k8v4, fp16 (Inkling-2-Mini: fp16, fp8; CUDA also k8v8, k8v4)")
+    g.add_argument("--kv", type=_choice("a memory format", S.KV_MODES), metavar="FORMAT", help="conversation memory format: int8 (default), q4_0 (half the memory), turbo2 (a quarter), turbo3 (3-bit, between turbo2 and q4_0), k3v8 (asymmetric: 3-bit keys + 8-bit values), k8v4, fp16 (Inkling-2-Mini: fp16, fp8; CUDA also k8v8, k8v4)")
     g.add_argument("--vision", type=_choice("a picture setting", S.VISION_MODES), metavar="off|on|gpu|cpu",
                    help="let the model read pictures. Default: on when the model can read pictures and the engine has the picture reader. "
                         "'on' picks the reader by your graphics memory: the CPU reader under 24 GB, the GPU reader from 24 GB (any make); "
