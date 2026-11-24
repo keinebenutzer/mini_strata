@@ -36,6 +36,25 @@ Nächster Start: einfach `./setup.sh` — es startet sofort.
 (`nvcc`) und `g++` für den Engine-Bau, ~25 GB freier Festplatte
 (11,8 + 12,4 GB Modell), 16 GB RAM.
 
+**nvcc auffindbar machen:** die Routine sucht den Compiler nur in PATH,
+`$CUDA_HOME`/`$CUDA_PATH`, `/usr/local/cuda*` und `/opt/cuda*`. Ein aus
+einem Tarball ausgepacktes Toolkit (z. B. `~/cuda-12.8/cuda-12.8`) steht
+daneben und muss genannt werden:
+
+```bash
+CUDA_HOME=$HOME/cuda-12.8/cuda-12.8 ./setup.sh --family qwen36 --model UD-IQ2_XXS --yes
+# oder: STRATA_NVCC=$HOME/cuda-12.8/cuda-12.8/bin/nvcc ./setup.sh ...
+```
+
+Für sm_86 genügt CUDA ≥ 12.0; CUDA 13.0 verlangt der Bau nur für RTX 50
+(sm_120 — nvcc 13.2.0/13.2.1 kompiliert dort die Kernel falsch). Ist
+NVIDIAs apt-Quelle deaktiviert (`cuda-*.list.distUpgrade` nach einem
+Dist-Upgrade), findet die Automatik kein `cuda-toolkit-13-0`; ein
+vorhandenes Toolkit per `CUDA_HOME` ist dann der kürzere Weg.
+Liegen Modell und `.mq8.gguf` schon im Ordner (Namen wie im HF-Repo), zeigt
+`--gguf-dir <ordner>` der Routine die Dateien — sie lädt und baut sie dann
+nicht neu.
+
 ## Der manuelle Weg (für Paketbauer und Sonderfälle)
 
 ### Bauen
