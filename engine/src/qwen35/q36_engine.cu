@@ -101,15 +101,23 @@ constexpr int kThreads = 256;
 // K channels make a correctness problem rather than a rounding one.  The rotation spreads a head's outliers over
 // all 256 dimensions before the codes are rounded.  It is orthonormal, so norms and dot products are unchanged:
 // <Hq, Hk> = <q, k>, and the output, a mix of rotated V, is rotated back with the same transform.
-enum KvMode { KV_FP32 = 0, KV_FP16 = 1, KV_INT8 = 2, KV_Q4 = 3 };
+// turbo3 (the main engine's --kv turbo3, kv_turbo3.hpp) rides the SAME rotation sites as fp4: 3-bit codes in
+// 8 uniform levels (centroids -0.875 .. +0.875 times an fp16 amax/0.875 scale) over 32-value blocks, 14 bytes
+// per block (2 scale + 12 bitstream) instead of fp4's 16 (2 scale arrays aside) - the scale lives INSIDE the
+// block, so there are no separate ksc / vsc pools.  Same quantizer math as the main engine's turbo3_group.
+enum KvMode { KV_FP32 = 0, KV_FP16 = 1, KV_INT8 = 2, KV_Q4 = 3, KV_TURBO3 = 4 };
 inline const char* kv_name(int m) {
-    return m == KV_FP32 ? "fp32" : m == KV_FP16 ? "fp16" : m == KV_INT8 ? "fp8 (int8)" : "fp4 (q4_0, rotated)";
+    return m == KV_FP32 ? "fp32" : m == KV_FP16 ? "fp16" : m == KV_INT8 ? "fp8 (int8)"
+           : m == KV_Q4 ? "fp4 (q4_0, rotated)" : "turbo3 (3-bit, rotated)";
 }
-/// Bytes of one KV head's row (one cell) of K or V: 32 / 16 / 8 bits, or 4 bits packed two to a byte.
+/// Bytes of one KV head's row (one cell) of K or V: 32 / 16 / 8 bits, 4 bits packed two to a byte,
+/// or turbo3's 14-byte blocks (3-bit codes + inline scale): head_dim / 32 * 14.
 inline size_t kv_row_bytes(size_t head_dim, int m) {
-    return m == KV_FP32 ? head_dim * 4 : m == KV_FP16 ? head_dim * 2 : m == KV_INT8 ? head_dim : head_dim / 2;
+    return m == KV_FP32 ? head_dim * 4 : m == KV_FP16 ? head_dim * 2 : m == KV_INT8 ? head_dim
+           : m == KV_Q4 ? head_dim / 2 : head_dim / 32 * 14;
 }
-/// The extra scale bytes of that row: int8 one float per cell, q4 one fp16 per 32 values, else none.
+/// The extra scale bytes of that row: int8 one float per cell, q4 one fp16 per 32 values, else none
+/// (turbo3 carries its scale inside every block).
 inline size_t kv_scale_bytes(size_t head_dim, int m) {
     return m == KV_INT8 ? 4 : m == KV_Q4 ? (head_dim / 32) * 2 : 0;
 }
@@ -854,6 +862,189 @@ __global__ void k_kv_q4_f16(const int8_t* kc, const int8_t* vc, const __half* ks
     const int64_t o = ((int64_t) kvh * P + cell) * HD + d;
     k16[o] = __float2half(kb[d]);
     v16[o] = __float2half(vb[d]);
+}
+// ---- turbo3 (--kv turbo3): the main engine's 3-bit format on q36's row-major cache.
+// block = 14 bytes: an fp16 scale (amax / 0.875) + 12 bytes of 3-bit codes, value i in bits 3i..3i+2 of the
+// little-endian bitstream.  The quantizer mirrors kv_turbo3.cu's turbo3_group one for one (same rintf + 3.5,
+// same warp-wide OR into a 128-bit accumulator - deliberately NOT a byte array: an address-taken uint8_t[12]
+// spills 16 B to the stack on sm_86 and the engine's spill guard demands STACK 0).
+struct Turbo3G { __half d; unsigned long long lo; unsigned long long hi; };
+__device__ __forceinline__ unsigned __int128 turbo3_acc_q36(float x, int lane, float amax) {
+    const float hd = __half2float(__float2half_rn(amax / 0.875f)) * 0.25f;   // the centroid spacing (exact: * 0.25)
+    const float t = hd != 0.0f ? x / hd : 0.0f;                               // an all-zero block codes to 4 (dequant +0)
+    const int q = (int) rintf(t + 3.5f);
+    const unsigned long long qc = (unsigned long long) (q < 0 ? 0 : (q > 7 ? 7 : q));
+    unsigned long long lo = (unsigned long long) ((unsigned __int128) qc << (3 * lane));   // 3*lane <= 93: bits past 64
+    unsigned long long hi = (unsigned long long) (((unsigned __int128) qc << (3 * lane)) >> 64);   // ... land here
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        lo |= __shfl_xor_sync(0xffffffffu, lo, o);
+        hi |= __shfl_xor_sync(0xffffffffu, hi, o);
+    }
+    return ((unsigned __int128) hi << 64) | (unsigned long long) lo;
+}
+/// byte j (0..11) of a 96-bit code stream held as a 128-bit accumulator - taken straight out of the halves,
+/// so a kernel never materialises two 128-bit streams at once (two Turbo3G live values spill 32 B on sm_86).
+__device__ __forceinline__ uint8_t turbo3_byte(unsigned long long lo, unsigned long long hi, int j) {
+    return j < 8 ? (uint8_t) (lo >> (8 * j)) : (uint8_t) (hi >> (8 * (j - 8)));
+}
+/// value v (0..31) of a 12-byte code bitstream as its 3-bit code.
+__device__ __forceinline__ int turbo3_code(const uint8_t* qs, int v) {
+    const int bit = 3 * v;
+    int c = qs[bit >> 3] >> (bit & 7);
+    if ((bit & 7) > 5) c |= qs[(bit >> 3) + 1] << (8 - (bit & 7));
+    return c & 7;
+}
+/// k_attn_prep_q4's twin for turbo3: the same norm / rope / Hadamard path, then 3-bit codes into 14-byte
+/// blocks (the scale rides inside each block - no ksc / vsc pools).  kc / vc are uint8_t rows of HD / 32 blocks.
+__global__ void k_attn_prep_turbo3(const float* qg, const float* kx, const float* vx, const float* qw, const float* kw,
+                                   float* q, float* gate, uint8_t* kc, uint8_t* vc, int H, int HKV,
+                                   int HD, int n_rot, const int32_t* pos0, int ctx, float base, float eps,
+                                   const int32_t* rdelta, const int32_t* mtab, RowSel rs) {
+    __shared__ float sh[kThreads];
+    __shared__ float buf[256], kb[256], vb[256];
+    const int head = blockIdx.x, t = blockIdx.y;
+    const int pos = rs.cell ? rs.cell[t] : *pos0 + t;
+    const int dl = rs.delta ? rs.delta[t] : (rdelta ? *rdelta : 0);
+    if (rs.kc) {
+        kc = (uint8_t*) rs.kc[rs.slot[t]];
+        vc = (uint8_t*) rs.vc[rs.slot[t]];
+    }
+    const bool isq = head < H;
+    const float* src = isq ? qg + ((size_t) t * H + head) * 2 * HD : kx + ((size_t) t * HKV + head - H) * HD;
+    const int i = threadIdx.x;
+    const float v0 = i < HD ? src[i] : 0.f;
+    const float s = block_sum(v0 * v0, sh);
+    const float r = rsqrtf(s / (float) HD + eps);
+    if (i < HD) buf[i] = v0 * r * (isq ? qw[i] : kw[i]);
+    __syncthreads();
+    if (i >= HD) return;
+    float v = buf[i];
+    const int half = n_rot / 2;
+    if (i < n_rot) {
+        const int p = i < half ? i : i - half;
+        const int rp = mtab ? __ldg(mtab + (size_t) pos * 3 + p % 3) : pos + dl;
+        const float theta = (float) rp * powf(base, -2.0f * (float) p / (float) n_rot);
+        float sn, cs;
+        sincosf(theta, &sn, &cs);
+        v = i < half ? buf[i] * cs - buf[i + half] * sn : buf[i - half] * sn + buf[i] * cs;
+    }
+    if (isq) {
+        q[((size_t) t * H + head) * HD + i] = v;
+        gate[((size_t) t * H + head) * HD + i] = qg[((size_t) t * H + head) * 2 * HD + HD + i];
+    } else {
+        const int kh = head - H, lane = i & 31;
+        kb[i] = v;
+        vb[i] = vx[((size_t) t * HKV + kh) * HD + i];
+        // rotated like fp4: the query the same way (<Hq,Hk> = <q,k>), the output rotated back on the way out
+        fwht256_row(kb);
+        fwht256_row(vb);
+        const size_t row = ((size_t) kh * ctx + pos) * (size_t) (HD / 32);   // one block per 32 values
+        uint8_t* pk = kc + row * 14;
+        uint8_t* pv = vc + row * 14;
+        const int b = i >> 5;
+        // K first, its stream dropped before V's is built: only one 128-bit accumulator live at a time (STACK 0)
+        {
+            float amax = fabsf(kb[i]);
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+            if (lane == 0) *(__half*) (pk + b * 14) = __float2half_rn(amax / 0.875f);
+            const unsigned __int128 acc = turbo3_acc_q36(kb[i], lane, amax);
+            const unsigned long long lo = (unsigned long long) acc, hi = (unsigned long long) (acc >> 64);
+            if (lane < 12) pk[b * 14 + 2 + lane] = turbo3_byte(lo, hi, lane);
+        }
+        {
+            float amax = fabsf(vb[i]);
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+            if (lane == 0) *(__half*) (pv + b * 14) = __float2half_rn(amax / 0.875f);
+            const unsigned __int128 acc = turbo3_acc_q36(vb[i], lane, amax);
+            const unsigned long long lo = (unsigned long long) acc, hi = (unsigned long long) (acc >> 64);
+            if (lane < 12) pv[b * 14 + 2 + lane] = turbo3_byte(lo, hi, lane);
+        }
+    }
+}
+/// k_kv_q4_f16's twin for turbo3: dequantise into the prompt GEMM's compact [kvh][P][HD] halves, rotated back
+/// out of the Hadamard basis the store put them in.
+__global__ void k_kv_turbo3_f16(const uint8_t* kc, const uint8_t* vc, __half* k16, __half* v16,
+                                int ctx, int P, int HD, int HKV) {
+    __shared__ float kb[256], vb[256];
+    if (HD != 256) return;                       // the rotation is 256 points (the q36 geometry's head_dim)
+    const int cell = (int) (blockIdx.x % P), kvh = (int) (blockIdx.x / P);
+    const int d = (int) threadIdx.x;
+    const uint8_t* krow = kc + ((size_t) kvh * ctx + (size_t) cell) * (size_t) (HD / 32) * 14;
+    const uint8_t* vrow = vc + ((size_t) kvh * ctx + (size_t) cell) * (size_t) (HD / 32) * 14;
+    const int b = d >> 5;
+    const float sk = __half2float(*(const __half*) (krow + b * 14));
+    const float sv = __half2float(*(const __half*) (vrow + b * 14));
+    kb[d] = (float) (turbo3_code(krow + b * 14 + 2, d & 31) - 3.5f) * 0.25f * sk;
+    vb[d] = (float) (turbo3_code(vrow + b * 14 + 2, d & 31) - 3.5f) * 0.25f * sv;
+    fwht256_row(kb);
+    fwht256_row(vb);
+    const int64_t o = ((int64_t) kvh * P + cell) * HD + d;
+    k16[o] = __float2half(kb[d]);
+    v16[o] = __float2half(vb[d]);
+}
+/// k_attn_part4's twin for turbo3: the decode reader, scores straight from the 14-byte blocks (the query is
+/// rotated into the Hadamard basis like everywhere else, the output mix rotated back).
+__global__ void k_attn_part_turbo3(const float* q, const uint8_t* kc, const uint8_t* vc,
+                                   const int32_t* pos0, int t0, int H, int HKV, int ctx, float scale, int n_chunk,
+                                   float* pacc, float* pm, float* pl, RowSel rs) {
+    constexpr int HD = 256;
+    __shared__ float qs[HD], sc[kChunkCells], sh[kThreads], ob[HD];
+    const int c = blockIdx.x, row = blockIdx.y;
+    const int t = t0 + row / H, h = row % H, kvh = h / (H / HKV);
+    const int npos = (rs.cell ? rs.cell[t] : *pos0 + t) + 1;
+    if (rs.kc) {
+        kc = (const uint8_t*) rs.kc[rs.slot[t]];
+        vc = (const uint8_t*) rs.vc[rs.slot[t]];
+    }
+    const int p0 = c * kChunkCells;
+    if (p0 >= npos) return;
+    const int j = threadIdx.x;
+    qs[j] = q[((size_t) t * H + h) * HD + j];
+    __syncthreads();
+    fwht256_row(qs);   // the query into the Hadamard basis too: <Hq, Hk> = <q, k>, so the scores are unchanged
+    const int p = p0 + j;
+    float s = -INFINITY;
+    if (p < npos) {
+        const uint8_t* kp = kc + ((size_t) kvh * ctx + p) * (size_t) (HD / 32) * 14;
+        float a = 0.f;
+        for (int b = 0; b < HD / 32; ++b) {
+            const uint8_t* blk = kp + b * 14;
+            const float bs = __half2float(*(const __half*) blk);
+            const uint8_t* qs3 = blk + 2;
+            float part = 0.f;
+            for (int v = 0; v < 32; ++v)
+                part += qs[b * 32 + v] * ((float) turbo3_code(qs3, v) - 3.5f) * 0.25f;
+            a += part * bs;   // jede Block-Teilsumme traegt ihren eigenen Scale - nie die kumulierte Summe
+        }
+        s = a * scale;
+    }
+    const float m = block_max(s, sh);
+    const float e = p < npos ? expf(s - m) : 0.f;
+    sc[j] = e;
+    const float l = block_sum(e, sh);
+    const int n = min(kChunkCells, npos - p0);
+    float acc = 0.f;
+    const uint8_t* vp = vc + ((size_t) kvh * ctx + p0) * (size_t) (HD / 32) * 14;
+    const int byte = (3 * j) >> 3, shift = 3 * j - 8 * byte;
+    for (int k = 0; k < n; ++k) {
+        const uint8_t* blk = vp + (size_t) k * (HD / 32) * 14;
+        int code = blk[2 + byte] >> shift;
+        if (shift > 5) code |= blk[3 + byte] << (8 - shift);
+        code &= 7;
+        const float vs = __half2float(*(const __half*) blk);
+        acc += sc[k] * vs * ((float) code - 3.5f) * 0.25f;
+    }
+    ob[j] = acc;
+    fwht256_row(ob);   // back out of the Hadamard basis: the output is a mix of rotated V and H is its own inverse
+    const size_t o = (size_t) row * n_chunk + c;
+    pacc[o * HD + j] = ob[j];
+    if (j == 0) {
+        pm[o] = m;
+        pl[o] = l;
+    }
 }
 /// The prompt's causal softmax: row (h, t) of S (ld floats, P cells) -> softmax(S * scale) over the cells
 /// [0, pos0 + t], 0 past them, as FP16 probabilities (S16, the same row offsets, ld halves).  grid (T, H), block 256.
@@ -2246,9 +2437,9 @@ struct Engine {
                                  (long long) ckpt_every, ckpt_layers, ckpt_conv_bytes, ckpt_S_bytes, ckpt_h_bytes);
             }
         }
-        if (kv_mode == KV_Q4 && m->g.head_dim != 256) {   // the Hadamard rotation is 256 points
-            std::fprintf(stderr, "strata-q36: --kv fp4 rotates 256-value rows, this model's head_dim is %d\n",
-                         (int) m->g.head_dim);
+        if ((kv_mode == KV_Q4 || kv_mode == KV_TURBO3) && m->g.head_dim != 256) {   // the Hadamard rotation is 256 points
+            std::fprintf(stderr, "strata-q36: --kv %s rotates 256-value rows, this model's head_dim is %d\n",
+                         kv_name(kv_mode), (int) m->g.head_dim);
             std::exit(2);
         }
         std::fprintf(stderr, "strata-q36: context %d cells, prompt chunk %d%s, K / V cache --kv %s (%.2f KiB per token, per "
@@ -2790,6 +2981,12 @@ struct Engine {
                                                                       rows_mode ? nullptr : ksc[li],
                                                                       rows_mode ? nullptr : vsc[li], H, HKV, HD, m->n_rot,
                                                                       dpos, ctx, m->rope_base, m->eps, d_delta, mtab_now, rs);
+            else if (kv_mode == KV_TURBO3)
+                k_attn_prep_turbo3<<<dim3(H + HKV, T), kThreads, 0, st>>>(qg, kx, vx, L.q_norm, L.k_norm, q, gate,
+                                                                          rows_mode ? nullptr : (uint8_t*) kc[li],
+                                                                          rows_mode ? nullptr : (uint8_t*) vc[li],
+                                                                          H, HKV, HD, m->n_rot, dpos, ctx, m->rope_base,
+                                                                          m->eps, d_delta, mtab_now, rs);
             else
                 k_attn_prep_q4<<<dim3(H + HKV, T), kThreads, 0, st>>>(qg, kx, vx, L.q_norm, L.k_norm, q, gate,
                                                                       rows_mode ? nullptr : (int8_t*) kc[li],
@@ -2819,6 +3016,9 @@ struct Engine {
                 } else if (kv_mode == KV_INT8) {
                     k_kv_i8_f16<<<grid1((int64_t) HKV * P * HD), kThreads, 0, st>>>((int8_t*) kc[li], (int8_t*) vc[li],
                                                                                     ksc[li], vsc[li], k16, v16, ctx, P, HD, HKV);
+                } else if (kv_mode == KV_TURBO3) {
+                    k_kv_turbo3_f16<<<dim3((unsigned) (HKV * P)), 256, 0, st>>>((uint8_t*) kc[li], (uint8_t*) vc[li],
+                                                                                 k16, v16, ctx, P, HD, HKV);
                 } else {
                     k_kv_q4_f16<<<dim3((unsigned) (HKV * P)), 256, 0, st>>>((int8_t*) kc[li], (int8_t*) vc[li],
                                                                             (__half*) ksc[li], (__half*) vsc[li],
@@ -2879,6 +3079,12 @@ struct Engine {
                                                                                rows_mode ? nullptr : ksc[li],
                                                                                rows_mode ? nullptr : vsc[li], dpos, t0, H, HKV,
                                                                                ctx, 1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl, rs);
+                    else if (kv_mode == KV_TURBO3)
+                        k_attn_part_turbo3<<<dim3(nc, nt * H), kChunkCells, 0, st>>>(q,
+                                                                                     rows_mode ? nullptr : (const uint8_t*) kc[li],
+                                                                                     rows_mode ? nullptr : (const uint8_t*) vc[li],
+                                                                                     dpos, t0, H, HKV, ctx, 1.0f / sqrtf((float) HD),
+                                                                                     n_chunk, pacc, pm, pl, rs);
                     else
                         k_attn_part4<<<dim3(nc, nt * H), kChunkCells, 0, st>>>(q, rows_mode ? nullptr : (const int8_t*) kc[li],
                                                                                rows_mode ? nullptr : (const int8_t*) vc[li],
@@ -5397,8 +5603,9 @@ int strata::qwen35::run(int argc, char** argv) {
             else if (v == "fp16" || v == "f16" || v == "half") kv_mode = KV_FP16;
             else if (v == "fp8" || v == "int8" || v == "q8" || v == "q8_0") kv_mode = KV_INT8;
             else if (v == "fp4" || v == "q4" || v == "q4_0") kv_mode = KV_Q4;
+            else if (v == "turbo3") kv_mode = KV_TURBO3;
             else {
-                std::fprintf(stderr, "strata-q36: --kv takes fp32, fp16, fp8 or fp4 (not %s)\n", v.c_str());
+                std::fprintf(stderr, "strata-q36: --kv takes fp32, fp16, fp8, fp4 or turbo3 (not %s)\n", v.c_str());
                 return 2;
             }
         }

@@ -7699,7 +7699,9 @@ def choices_from_config(cfg_path: Path) -> dict:
         a = cfg.get("args", [])
         ctx = a[a.index("--max-context") + 1] if "--max-context" in a and a.index("--max-context") + 1 < len(a) else None
         vis = cfg.get("vision")
-        return {"family": own, "model": size, "context": int(ctx) if ctx and ctx.isdigit() else None, "kv": None,
+        kv = a[a.index("--kv") + 1] if "--kv" in a and a.index("--kv") + 1 < len(a) else None
+        return {"family": own, "model": size, "context": int(ctx) if ctx and ctx.isdigit() else None,
+                "kv": kv if kv in ("fp16", "int8", "q4_0", "turbo3") else None,
                 "vision": ("yes" if "--vision" in a else "none") if d.get("hy4") else (("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "none"),
                 "esp": "off", "host": cfg.get("host"), "api_key": cfg.get("api_key"),
                 "port": cfg.get("port"), "gpu": cfg.get("gpu"), "layer_split": None,
@@ -9805,9 +9807,9 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if a.rope_scaling or a.rope_scale or a.resident_budget_gib is not None or a.low_ram not in (None, "auto"):
         warn(f"--rope-scaling / --resident-budget-gib / --low-ram are Flash-Next settings: {fam['title']} "
              "does not use them")
-    kv = a.kv if a.kv in ("fp32", "fp16", "fp8", "fp4") else None   # q36's own --kv widths; Flash-Next's int8/q4_0/k8v4 do not apply here
+    kv = a.kv if a.kv in ("fp32", "fp16", "fp8", "fp4", "turbo3") else None   # q36's own --kv widths; Flash-Next's int8/k8v4 do not apply here. turbo3 = the fork's 3-bit rotated KV (mini_strata)
     if a.kv and kv is None:
-        warn(f"--kv {a.kv} is a Flash-Next memory format: {fam['title']} takes fp32, fp16, fp8 or fp4 - kept at its default (fp32)")
+        warn(f"--kv {a.kv} is a Flash-Next memory format: {fam['title']} takes fp32, fp16, fp8, fp4 or turbo3 - kept at its default (fp32)")
     folder = Path(a.gguf_dir) if a.gguf_dir else Path(a.models_dir) / tag
     published = fam["file"].format(q=model)           # the published file's name: its pinned size and SHA-256
     gguf = folder / published
@@ -9891,6 +9893,8 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     step(7, "writing the start script")
     prefill = "256" if vram_gb <= 6.5 else "auto"   # fork: 0.1.66 OOMs on 4 GB cards with auto (512): "not enough VRAM for the hybrid experts' buffers and slots" (measured on a 4 GB A2000); 256 is the working recipe
     args = ["--native", str(gguf), "--max-context", str(ctx), "--prefill", prefill, "--mtp", str(fam["mtp"])]
+    if a.kv in ("fp16", "int8", "q4_0", "turbo3"):     # the own path's --kv (q36_engine): fp16 / int8 / 4-bit rotated / turbo3
+        args += ["--kv", a.kv]                          # turbo3: 112 B per row instead of q4_0's 128 (256-wide heads)
     if model == "UD-IQ2_XXS" and vram_gb <= 6.5 and "--expert-vram" not in args:
         args += ["--expert-vram", f"{max(vram_gb - 3.7, 0.3):.1f}"]   # the measured 4 GB recipe: the dense side keeps its room on the card, the experts run from RAM
     if kv:
