@@ -800,7 +800,7 @@ function projectionText(c) {
 }
 function renderAbout(eng, hw, st) {
   const kvWords = (eng.kv_options && eng.kv_options.words) || {int8: "8-bit", q4_0: "4-bit (Hadamard-rotated)", fp16: "16-bit"};
-  const kv = kvWords[eng.kv] || eng.kv;
+  const kv = kvWords[eng.kv || eng.kv_dtype] || eng.kv || eng.kv_dtype;
   facts($("facts-engine"), [
     ["Model", eng.model],
     ["Engine", eng.version ? `v${eng.version}` : "built from source"],
