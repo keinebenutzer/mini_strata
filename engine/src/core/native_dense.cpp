@@ -1,5 +1,4 @@
 #include "strata/core/native_dense.hpp"
-#include "strata/core/gfx11_extra.hpp"
 #include "strata/core/run_manifest.hpp"
 #include <cstdlib>
 #include "strata/core/weights.hpp"
@@ -66,20 +65,6 @@ bool hc_q8_env() {
                 std::fprintf(stderr, "strata: Strix Halo (gfx1151): 8-bit hyper-connection weights are on (decode about 9%% faster, "
                                      "answers can differ in near-tie tokens); STRATA_HC_Q8=0 keeps the bf16 read\n");
                 return true;
-            }
-        }
-        {   // Discrete RDNA3 (gfx1100 / gfx1101 / gfx1102): Q8_0 hyper-connection projections halve verify HC memory traffic
-            if (!strata::core::gfx11_wmma_defaults_disabled(strata::qwen_defaults_026())) {
-                int dev11 = 0;
-                cudaDeviceProp p11;
-                const bool g11 = cudaGetDevice(&dev11) == cudaSuccess && cudaGetDeviceProperties(&p11, dev11) == cudaSuccess &&
-                                 !p11.integrated && strata::kernels::gfx_arch_is_discrete_rdna3(p11.gcnArchName);
-                (void) cudaGetLastError();
-                if (g11) {
-                    std::fprintf(stderr, "strata: gfx11 (RDNA3): 8-bit hyper-connection weights are on (quantized at load, "
-                                         "decode faster, answers can differ slightly); STRATA_HC_Q8=0 or STRATA_GFX11_DEFAULTS=0 keeps the bf16 read\n");
-                    return true;
-                }
             }
         }
         const char* d = std::getenv("STRATA_GFX12_DEFAULTS");
@@ -343,7 +328,8 @@ uint64_t NativeDense::bytes_in(int64_t lo, int64_t hi) const {
 }
 
 bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& table, std::string& err,
-                       bool include_ple_key, int64_t layer_lo, int64_t layer_hi) {
+                       bool include_ple_key, int64_t layer_lo, int64_t layer_hi,
+                       const std::vector<std::pair<int64_t, int64_t>>* skip) {
     auto outside = [&](const std::string& name) {   // a blk.<l>. tensor of another stage's layers
         if (layer_hi < 0 || name.rfind("blk.", 0) != 0) return false;
         const long l = std::strtol(name.c_str() + 4, nullptr, 10);
@@ -429,6 +415,11 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             for (const auto& tensor : gguf.tensors()) {
                 if (!eligible(tensor, include_ple_key) || outside(tensor.name)) continue;
                 if (!in_range(tensor.name) && tensor.name.find("ple") == std::string::npos) continue;
+                if (skip != nullptr && tensor.name.rfind("blk.", 0) == 0) {   // layers this engine never runs
+                    const long long l = std::atoll(tensor.name.c_str() + 4);
+                    if (std::any_of(skip->begin(), skip->end(), [l](const auto& r) { return l >= r.first && l < r.second; }))
+                        continue;
+                }
                 if (!seen.insert(tensor.name).second) {
                     err = "native dense: duplicate tensor " + tensor.name; return false;
                 }

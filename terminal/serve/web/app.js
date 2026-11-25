@@ -801,12 +801,14 @@ function projectionText(c) {
          "describes the vector as a refusal-direction projection; measure the speed yourself";
 }
 function renderAbout(eng, hw, st) {
-  const kv = {int8: "8-bit", q4_0: "4-bit (Hadamard-rotated)", fp16: "16-bit"}[eng.kv] || eng.kv;
+  const kvWords = (eng.kv_options && eng.kv_options.words) || {int8: "8-bit", q4_0: "4-bit (Hadamard-rotated)", fp16: "16-bit"};
+  const kv = kvWords[eng.kv || eng.kv_dtype] || eng.kv || eng.kv_dtype;
   facts($("facts-engine"), [
     ["Model", eng.model],
     ["Engine", eng.version ? `v${eng.version}` : "built from source"],
     ["Context", eng.max_context ? `${fmt(eng.max_context)} tokens` : null],
     ["KV cache", kv ? `${kv}${eng.kv_resident ? `, streamed: ${fmt(eng.kv_resident)} positions per layer in VRAM, the rest in RAM` : ", all in VRAM"}` : null],
+    ["CTk options", eng.kv_options && eng.kv_options.choices ? eng.kv_options.choices.join(" · ") : null],
     ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
     // #5080: the MTP line only when the MTP is the drafter (eng.drafting, strata_control/drafting.py engine_info; an engine too old to say had only the MTP)
     ["Speculation", eng.spec && (eng.drafting == null || eng.drafting === "mtp") ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],

@@ -79,6 +79,7 @@ struct AdaptGate {
 
 class NativeHead;
 class RemoteExpertOpt;
+class StageLink;   // MULTINODE (remote_stage.hpp): a stage running in another engine over TCP
 
 /// The CPU pool for a window: x_f (n_tok, n_embd), ids (n_tok, k) -> out (n_tok * k, n_embd), hit rows zeroed.
 using PoolMultiFn = void (*)(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
@@ -223,6 +224,13 @@ public:
     /// The next stage: `run` and `commit` continue into it (its pool calls get `next_user`); sampling settings
     /// and `final_R` are the last stage's.
     void set_next(Verifier* next, void* next_user) { next_ = next; next_user_ = next_user; }
+    /// MULTINODE: this verifier is a proxy for a stage in another engine (remote_stage.hpp).  `run` sends the
+    /// window and `hand_in_host` over `link` and writes the stage's reply to `hand_out_host`, then continues into
+    /// the next stage; `commit` forwards too.  Set after `set_stage` and INSTEAD of `init` (no GPU work here).  The
+    /// two pointers are the host side of the mapped hand-off buffers `set_stage` got.
+    void set_remote(StageLink* link, const ModelGeometry* g, const float* hand_in_host, float* hand_out_host, int max_t) {
+        remote_ = link; g_ = g; rin_ = hand_in_host; rout_ = hand_out_host; max_t_ = max_t;
+    }
     /// floats per token in a hand-off buffer
     static int64_t handoff_floats(const ModelGeometry& g) { return (int64_t) g.hc * g.n_embd + g.n_embd + g.hc; }
 
@@ -351,12 +359,12 @@ public:
     /// (its graphs are captured there).
     void set_always_publish(bool on) {
         always_publish_ = on;
-        if (on) { device_plan_ = false; device_hits_ = false; }
+        if (on) device_plan_ = false;
     }
     /// 0.1.43: the adaptive tier's overlap gate (see AdaptGate).  Refused (false) with the device-planned layers (E-6),
     /// which never ask the host.  The pointer must outlive the verifier's windows.
     bool set_adapt_gate(AdaptGate* g) {
-        if (g != nullptr && (device_plan_ || device_hits_)) return false;
+        if (g != nullptr && device_plan_) return false;
         adapt_gate_ = g;
         return true;
     }
@@ -435,11 +443,6 @@ public:
     /// It gets this verifier's stream; false (with the message in `err`) fails the launch.
     void set_pre_launch(std::function<bool(cudaStream_t cs, std::string& err)> f) { pre_launch_ = std::move(f); }
     /// the pool never plans a PCIe share (--pcie-frac 0): the window skips that path.  Before the first run.
-    void set_no_pcie_share(bool on) { no_pcie_share_ = on; }
-    bool device_hits_active() const {
-        return device_hits_ && no_pcie_share_ && !ar_on() && !always_publish_ && remote_opt_ == nullptr &&
-               adapt_gate_ == nullptr && m_bal_ == nullptr;
-    }
 
     /// The PCIe count of each layer from measured costs (PcieModel) instead of a fixed share: the spin kernels stamp
     /// each step's GPU work (the plan's arrival, the PCIe part's start, the wait for the CPU's rows; GPU clock), the host
@@ -451,6 +454,9 @@ public:
         if (bal_ != nullptr && m_bal_ != nullptr) bal_->on = !paused;
     }
     bool pcie_balance_on() const { return bal_ != nullptr && m_bal_ != nullptr; }
+    // mini_strata: PCIe-Staging-Aufteilung und Geraete-Treffergruppen (device_hits) sind entfernt.
+    void set_no_pcie_share(bool) {}
+    bool device_hits_active() const { return false; }
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
     int64_t windows = 0;
@@ -604,10 +610,6 @@ private:
     uint32_t* h_plan_err_ = nullptr; uint32_t* m_plan_err_ = nullptr;   // set by resident_plan on a -1 (all-resident graph)
     const int32_t* h_res_ = nullptr;      ///< the host residency table (VerifyHits::h_res)
     bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (STRATA_VERIFY_DEVICE_PLAN)
-    bool device_hits_ = false;            ///< STRATA_VERIFY_DEVICE_HITS: partial-VRAM hit groups planned on the device
-    bool no_pcie_share_ = false;          ///< set_no_pcie_share: --pcie-frac 0 without dynamic PCIe staging
-    bool head_bitplane_used_ = false;     ///< captured graph ran vhead_bitplane_argmax directly into m_out_ (head_logits_ lazy)
-    void ensure_head_logits(int T);       ///< materialize full head_logits_ from head_mixed_ on demand when head_bitplane_used_
     uint32_t* skip_ = nullptr;            ///< E-6: per group, the ring whose plan the device built (0: the host's)
     unsigned* qcnt_ = nullptr;             ///< S26 STRATA_QFUSE: the HC read's q8_1 group counters (n_embd / 32)
     unsigned long long* slot_off_d_ = nullptr;   ///< E-6: the slot offsets on the device
@@ -632,6 +634,9 @@ private:
     bool chain_overlap() const;          ///< this stage hands off through a flag to a next stage that waits on it
     Verifier* next_ = nullptr;
     void* next_user_ = nullptr;
+    StageLink* remote_ = nullptr;   ///< set_remote: a proxy for a stage in another engine
+    const float* rin_ = nullptr;    ///< the host side of this stage's in-hand-off
+    float* rout_ = nullptr;         ///< the host side of this stage's out-hand-off
     bool ple_stage() const { return lb_ <= 1 && 1 < le_; }   ///< holds layer 1, where the PLE block runs
     void stage_inputs(int T, const int32_t* tokens, int64_t pos0);
     bool staged_ = false;
@@ -734,13 +739,6 @@ private:
     uint32_t* h_flag_ = nullptr; uint32_t* m_flag_ = nullptr;
     uint32_t* h_flagA_ = nullptr; uint32_t* m_flagA_ = nullptr;  // the GPU plan is in place
     uint32_t* h_flagB_ = nullptr; uint32_t* m_flagB_ = nullptr;  // the PCIe share's DMA copies have landed
-    // STRATA_MEGAKERNEL=1 (RDNA3/4 persistent GDN dense chain): device counter scratch + mapped stall word
-    unsigned* mk_counters_ = nullptr;
-    unsigned* h_mk_stall_ = nullptr;
-    unsigned* m_mk_stall_ = nullptr;
-    bool mk_in_graph_ = false;
-    bool megakernel_stall_take();
-    void megakernel_off();
     // set_pcie_balance: per step (layer x group, stride 2 groups) the GPU's clock as the plan arrives, as the PCIe
     // part starts and as it waits for the CPU rows (4 words a step); the pool's ms, its experts, the PCIe ones, and
     // whether the step had a plan

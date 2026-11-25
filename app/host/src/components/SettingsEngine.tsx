@@ -82,6 +82,20 @@ export function SettingsEngine() {
       </div>)}
       {count > 0 ? <p className="small muted engine-total">{tr("Engines take {0} on this computer.", [engineSize(list?.total_bytes ?? 0, localeTag())])}</p> : null}
       {count > 0 ? <details className="native-settings-diagnostic engine-details"><summary className="small">{tr("Details")}</summary>{groups.flatMap(g => g.engines).map(e => <p key={`${e.root ?? ''}${e.folder}`} className="small muted">{e.version} · {e.path}{e.build_id ? ` · ${e.build_id}` : ''}</p>)}</details> : null}
+      {native?.ctk_options && (
+        <div className="engine-ctk-options">
+          <h3 className="h3">{tr("CTk options")}</h3>
+          <p className="small muted">{tr("The --kv argument choices and their words, read from the source.")}</p>
+          <div className="engine-ctk-options__list">
+            {native.ctk_options.kv_choices.map(kv => (
+              <span key={kv} className="engine-ctk-option">
+                <span className="engine-ctk-option__key">{kv}</span>
+                <span className="engine-ctk-option__word">{native.ctk_options.kv_words[kv] ?? ''}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
       <div role="status" aria-live="polite">{said ? <p className="small">{said}</p> : null}</div>
       {error ? <ErrorNotice message={error.message} detail={error.detail}/> : null}
     </section>

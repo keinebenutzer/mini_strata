@@ -1,3 +1,22 @@
+> **Mini-Strata Fork.** Diese Variante bringt Strata auf 4-GB-Grafikkarten:
+> Qwen3.6-35B-A3B (MoE, 35 Mrd.) mit Experten im Arbeitsspeicher — gemessen 35–38 Token/s
+> Decode (q4_0 mit MTP2) auf einer RTX A2000 Laptop 4 GB. Alles dazu: [MINI.md](MINI.md) ·
+> Ablauf: [LESEN.md](LESEN.md).
+> Basis ist Upstream [Niko1221/Strata](https://github.com/Niko1221/Strata) v0.2.21
+> (Engine 0.1.67, MIT); der Fork fügt 2-Bit-Expertenunterstützung für den q36-Pfad hinzu.
+
+> **Engine-Bau: der CUDA-Compiler muss gefunden werden.** Dieser Fork baut die Engine selbst (nur sein Code
+> nimmt die 2-Bit-Experten). `setup.sh` sucht `nvcc` an vier Stellen: PATH, `$CUDA_HOME`/`$CUDA_PATH`,
+> `/usr/local/cuda*` und `/opt/cuda*`. Ein aus dem Tarball ausgepacktes Toolkit — etwa `~/cuda-12.8/cuda-12.8` —
+> liegt daneben und wird nicht gefunden; es muss genannt werden:
+> `CUDA_HOME=$HOME/cuda-12.8/cuda-12.8 ./setup.sh --family qwen36 --model UD-IQ2_XXS --yes`
+> (oder der einzelne Compiler: `STRATA_NVCC=/pfad/zu/nvcc`).
+> **CUDA 13.0 ist nur für RTX 50 (sm_120) Pflicht** — für alle anderen Karten, auch sm_86, genügt CUDA ≥ 12.0
+> (nvcc 13.2.0/13.2.1 kompiliert die Kernel für sm_120 falsch, [Troubleshooting](docs/TROUBLESHOOTING.md)).
+> Meldet die Routine „no CUDA Toolkit found" und findet `apt` kein `cuda-toolkit-13-0`, ist meist NVIDIAs
+> apt-Quelle deaktiviert (`/etc/apt/sources.list.d/cuda-*.list.distUpgrade` nach einem Dist-Upgrade):
+> das vorhandene Toolkit per `CUDA_HOME` zu nennen ist dann der kürzere Weg.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="app/host/public/brand/strata-lockup-dark.svg">
@@ -44,40 +63,11 @@ We recommend **ISTA-DASLab first**, then **Unsloth** and other providers, where 
 </details>
 
 <details>
-<summary><img src="docs/media/models/hunyuan.svg" width="22" alt="" align="middle"> &nbsp;<b>Tencent Hy4-Flash</b></summary>
-
-| Pack | Your RAM | Graphics card |
-| --- | --- | --- |
-| **SQ-64** | 64 GiB | 8, 12 or 16 GiB |
-| **SQ-96** | 96 GiB | 8 or 12 GiB |
-| **SQ-128** | 128 GiB | 8 or 12 GiB |
-
-The number in the name is the RAM the pack is made for.
-
-[Hy4-Flash packs on Hugging Face](https://huggingface.co/strata-engine/Hy4-Flash-Strata)
-
-</details>
-
-<details>
 <summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
 
 **Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0. These are the currently documented packs for this model.
 
 [Model guide and compatibility](docs/QWEN36.md).
-
-</details>
-
-<details>
-<summary><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/models/thinking-machines-white.png"><img src="docs/media/models/thinking-machines.png" height="22" alt="Thinking Machines" align="middle"></picture> &nbsp;<b>Inkling 2 Mini</b></summary>
-
-| Provider | Choices |
-| --- | --- |
-| **Strata** | SQ-20 (19.35 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
-| **Unsloth** | UD-Q8\_K\_XL (22.87 GB), UD-Q4\_K\_XL (17.63 GB), UD-Q4\_K\_M (16.61 GB), UD-IQ4\_XS (15.73 GB), UD-Q3\_K\_XL (13.63 GB), UD-IQ3\_XXS (11.66 GB), UD-Q2\_K\_XL (9.14 GB), UD-IQ2\_XXS (8.49 GB), UD-IQ1\_M (8.02 GB), UD-IQ1\_S (7.76 GB) |
-
-SQ-20 is made for a 24 GiB graphics card, SQ-15 for 16 GiB and SQ-10 for 12 GiB. A 4 GiB card is enough to start.
-
-[Strata packs on Hugging Face](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Unsloth GGUF files](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)
 
 </details>
 
@@ -174,15 +164,6 @@ Run **`strata connect`** to see setup instructions for your tool. [Connection gu
 
 [All guides](docs) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Report a bug](https://github.com/Niko1221/Strata/issues/new/choose) ·
 [Benchmarks](docs/COMMUNITY_BENCHMARKS.md) · [How it works](docs/HOW_IT_WORKS.md) · [Contribute](.github/CONTRIBUTING.md)
-
-## Sponsors of Strata
-
-<!-- Sponsor logos: one centred row with room for five, each 130 px wide. Add the next sponsor after Olares, with &nbsp;&nbsp;&nbsp;&nbsp; between two logos. -->
-<p align="center">
-  <a href="https://heylinger.com"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/sponsors/linger-logo-white.svg"><img src="docs/media/sponsors/linger-logo-color.svg" alt="Linger" title="Linger" width="130" align="middle"></picture></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://www.olares.com/one"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/sponsors/olares-logo-white.svg"><img src="docs/media/sponsors/olares-logo-color.svg" alt="Olares" title="Olares" width="130" align="middle"></picture></a>
-</p>
 
 ## Support Strata
 

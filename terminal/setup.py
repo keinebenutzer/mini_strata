@@ -299,8 +299,8 @@ CUDA12_WHEELS = ["nvidia-cublas-cu12==12.9.1.4", "nvidia-cuda-runtime-cu12==12.9
 CUDA12_COMPAT_DRIVER = 528 if WIN else 525
 ENGINE12_DIR = "engine-cuda12"
 MIN_ENGINE = (0, 1, 46)                # versions compare all numbers; v0.1.60: engine changes since v0.2.13.1 (git log 628f74955..HEAD); v0.1.59: engine changes since v0.2.12 (git log 146df3c46..HEAD); v0.1.58: engine rounds 0215-0217 (tuned drafters, the file-tier re-check, prefill and Q5_0 fixes; git log c3b3f5035..HEAD); v0.1.46: the 0.2 release engine (UPDATE.bat and setup fetch it from the signed feed, #3469 #3437); v0.1.45: Qwen3.6 parallel requests and pictures, fixes #2346 #2372 #2396; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
-# KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, hybrid K8V4 (8-bit K, 4-bit V) 816
-KV_CELL_BYTES = {"q4_0": 576, "k8v4": 816}
+# KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, rotated 2-bit 320, rotated 3-bit 448, hybrid K8V4 (8-bit K, 4-bit V) 816
+KV_CELL_BYTES = {"q4_0": 576, "turbo2": 320, "turbo3": 448, "k3v8": 752, "k8v4": 816}
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "pillow", "psutil"]
 REQUIREMENTS = ROOT / "requirements.txt"   # the same packages and their dependencies, pinned (#214)
 BUILD_PACKAGES = ["cmake", "ninja"]
@@ -781,6 +781,7 @@ MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
 # packs): OWN_PATH_FAMILIES, offered in the same menu and installed by install_own_path.  NVIDIA (CUDA) and AMD (HIP)
 # only: the Intel Arc (SYCL) engine refuses it.
 QWEN36_FILES = {
+    "Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf": (11819399456, "627e2b05f83088448e27861ec392d56efc2b178783cae5adfa4ad2d988441203"),   # fork: the 2-bit size (its MTP experts are rebuilt to Q8_0, see tools/build_mq8.py)
     "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf": (22853663008, "55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1"),
     "Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf": (32611711264, "35fce994cd36104a7dc1bd8a4bdf13778145664c00fdef6773aebc9246e5019c"),
     "Qwen3.6-35B-A3B-Q8_0.gguf": (37801097504, "c1283d8b80c3e38b2735ddbc9766d3b3126f44d6c484be419d4e101d09a76131"),
@@ -796,7 +797,8 @@ OWN_PATH_FAMILIES = {
                # RAM: the engine keeps a copy of every expert in RAM when they do not all fit in VRAM (the hybrid mode),
                # so the file's size plus room for the OS and the rest (measured: UD-Q4_K_XL on a 46 GB PC with a 12 GB
                # card, 18.75 GiB of experts pinned)
-               "models": {"UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic), the smallest", "ram_gb": 32},
+               "models": {"UD-IQ2_XXS": {"about": "2-bit (Unsloth Dynamic), for small cards: the experts live in RAM; this fork builds its MTP weights (mq8)", "ram_gb": 16},
+                          "UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic), the smallest", "ram_gb": 32},
                           "UD-Q6_K_XL": {"about": "6-bit (Unsloth Dynamic), closer to the full model", "ram_gb": 44},
                           "Q8_0": {"about": "8-bit, the closest to the full model", "ram_gb": 52}},
                "sha256": QWEN36_FILES,
@@ -927,6 +929,7 @@ def build_inkling_import_args(
     if vision_path:
         args += ["--vision", str(vision_path)]
     return args
+
 
 
 # Every model file Strata downloads has a fixed size and SHA-256: (repository, file name) -> (bytes, sha256).  download()
@@ -4451,12 +4454,16 @@ ROCM_FAMILY_PINS = {"gfx103X-all": "7.13.0a20260515",    # #1103: 7.13.0a2026051
 ROCM_VERSION_OVERRIDE = os.environ.get("STRATA_ROCM_VERSION") or None
 ROCM_VERSION = ROCM_VERSION_OVERRIDE or ROCM_VERSION_DEFAULT   # kept for callers that read one version
 ROCM_SYSTEM_MIN = (7, 0)       # an older system ROCm is passed over for the wheels (gfx1201 needs ROCm 6.4 or newer)
-# Radeon 780M / 760M / 740M iGPU (Ryzen 7040 / 8040, Phoenix / Hawk Point, gfx1103): first-class UMA AMD GPU by default
-# (STRATA_EXPERIMENTAL_GFX1103=0 disables). Uses native dot4 + Wave32 WMMA + coherent UMA GTT allocation + <=1.0s guards.
-GFX1103_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1103", "1") != "0"
-# Radeon 890M / 880M iGPU (Ryzen AI 300, Strix Point, gfx1150): first-class UMA AMD GPU by default
-# (STRATA_EXPERIMENTAL_GFX1150=0 disables). Uses Wave32 WMMA + coherent UMA GTT allocation + gfx1150 hipBLASLt table.
-GFX1150_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1150", "1") != "0"
+# STRATA_EXPERIMENTAL_GFX1103=1 (opt-in, unsupported): the Radeon 780M / 760M / 740M iGPU (Ryzen 7040 / 8040, gfx1103) is taken
+# as a unified-memory AMD card like Strix Halo, with the native dot4 and gfx11 WMMA kernels, the gfx1103 exact speed switches
+# and a hipBLASLt table when one matches (measured on one machine: Ryzen 7 8745HS).  Unset: unchanged.
+GFX1103_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1103") == "1"
+# STRATA_EXPERIMENTAL_GFX1150=1 (opt-in, unvalidated): the Radeon 890M / 880M iGPU (Ryzen AI 300, Strix Point, gfx1150)
+# is taken as a unified-memory AMD card like Strix Halo.  The engine builds and runs for gfx1150 from 0.1.40.2 (#1217;
+# tools/hip/gfx1150-hipblaslt-100401.txt is calibrated on it), but no release ships a ready-made Windows engine for it:
+# build one with `STRATA_HIP_ARCHS=gfx1150 tools\hip\build_windows.bat` and start setup with `--prebuilt dist\`.
+# Unset: unchanged.
+GFX1150_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1150") == "1"
 # The Instinct MI50 / MI60 / Radeon VII (gfx906) also runs, from a source build on a system ROCm 6.x (the last line
 # with gfx906 libraries; AMD's wheels hold 7.x families only): setup lists the card but does not drive that build
 # (docs/AMD_HIP.md, the gfx906 section).
@@ -7809,7 +7816,9 @@ def choices_from_config(cfg_path: Path) -> dict:
         a = cfg.get("args", [])
         ctx = a[a.index("--max-context") + 1] if "--max-context" in a and a.index("--max-context") + 1 < len(a) else None
         vis = cfg.get("vision")
-        return {"family": own, "model": size, "context": int(ctx) if ctx and ctx.isdigit() else None, "kv": None,
+        kv = a[a.index("--kv") + 1] if "--kv" in a and a.index("--kv") + 1 < len(a) else None
+        return {"family": own, "model": size, "context": int(ctx) if ctx and ctx.isdigit() else None,
+                "kv": kv if kv in ("fp16", "int8", "q4_0", "turbo3") else None,
                 "vision": ("yes" if "--vision" in a else "none") if (d.get("hy4") or d.get("inkling")) else (("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "none"),
                 "esp": "off", "host": cfg.get("host"), "api_key": cfg.get("api_key"),
                 "port": cfg.get("port"), "gpu": cfg.get("gpu"), "layer_split": None,
@@ -8805,8 +8814,8 @@ UD_FIT_MIN_SLACK_MIB = 64         # at least a few cache slots beside the estima
 UD_FIT_CARD_GB = 9.5              # the check is for cards up to here
 UD_FIT_RUNTIME_MIB = 250          # CUDA / HIP: the runtime's own context (the SYCL measurement above has none of it)
 UD_FIT_ENGINE_RESERVE_MIB = 300   # the reserve the engine settles on when none is given and the card is tight
-KV_WORDS = {"int8": "8-bit", "q4_0": "4-bit (Hadamard-rotated)", "k8v4": "8-bit keys, 4-bit values", "fp16": "16-bit"}
-UD_FIT_KV_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "k8v4": 816}   # per token per attention layer (13)
+KV_WORDS = {"int8": "8-bit", "q4_0": "4-bit (Hadamard-rotated)", "turbo2": "2-bit (Hadamard-rotated)", "turbo3": "3-bit (Hadamard-rotated)", "k3v8": "3-bit keys, 8-bit values (Hadamard-rotated)", "k8v4": "8-bit keys, 4-bit values", "fp16": "16-bit"}
+UD_FIT_KV_BYTES = {"fp16": 2112, "int8": 1056, "q4_0": 576, "turbo2": 320, "turbo3": 448, "k3v8": 752, "k8v4": 816}   # per token per attention layer (13)
 UD_FIT_CTX_STEPS = (8192, 6144, 4608)
 
 
@@ -9893,6 +9902,9 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
                      f"choose a smaller size, or --model {model} --yes to install it anyway", "  Install it anyway?")
         warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose")
     ok(f"size: {model}")
+    if model == "UD-IQ2_XXS" and not a.build:
+        a.build = True        # the 2-bit experts run on this fork's engine only: the ready-made engine has no kernels for them
+        say("  this fork runs the 2-bit experts: its engine is compiled here (a C++/CUDA compiler is needed)")
     tag = fam["tag"] + model
     rec_ctx = own_path_context(fam, gpu.get("vram_gb", 0.0), model)
     if a.context:
@@ -9930,9 +9942,9 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if a.rope_scaling or a.rope_scale or a.resident_budget_gib is not None or a.low_ram not in (None, "auto"):
         warn(f"--rope-scaling / --resident-budget-gib / --low-ram are Flash-Next settings: {fam['title']} "
              "does not use them")
-    kv = a.kv if a.kv in ("fp32", "fp16", "fp8", "fp4") else None   # q36's own --kv widths; Flash-Next's int8/q4_0/k8v4 do not apply here
+    kv = a.kv if a.kv in ("fp32", "fp16", "fp8", "fp4", "turbo3") else None   # q36's own --kv widths; Flash-Next's int8/k8v4 do not apply here. turbo3 = the fork's 3-bit rotated KV (mini_strata)
     if a.kv and kv is None:
-        warn(f"--kv {a.kv} is a Flash-Next memory format: {fam['title']} takes fp32, fp16, fp8 or fp4 - kept at its default (fp32)")
+        warn(f"--kv {a.kv} is a Flash-Next memory format: {fam['title']} takes fp32, fp16, fp8, fp4 or turbo3 - kept at its default (fp32)")
     folder = Path(a.gguf_dir) if a.gguf_dir else Path(a.models_dir) / tag
     published = fam["file"].format(q=model)           # the published file's name: its pinned size and SHA-256
     gguf = folder / published
@@ -9980,8 +9992,18 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         download(fam["hf"] + gguf.name, gguf)
     verify_sha256(gguf, *fam["sha256"][published], own=bool(a.gguf_dir))
     ok(f"model file: {gguf}")
-    if vision != "none" and fam.get("mmproj"):         # the image encoder: Unsloth's mmproj, pinned, size + SHA-256 checked
-        mmproj = folder / fam["mmproj"]
+    if model == "UD-IQ2_XXS":                        # the fork's weight build: the MTP block's Q2_K/Q3_K experts go to Q8_0, the kernel list takes that
+        mq8 = folder / (published[:-5] + ".mq8.gguf")
+        if not mq8.exists():
+            if free_gb(folder) < size * 1.1 / 1e9:
+                fail(f"building the mq8 needs about {size * 1.1 / 1e9:.0f} GB more free space in {folder}",
+                     "free disk next to the model file and run setup again")
+            say("  building the MTP weights (blk.40 experts Q2_K/Q3_K -> Q8_0) ...")
+            run([sys.executable, str(ROOT / "tools" / "build_mq8.py"), str(gguf), str(mq8)])
+        gguf = mq8
+        ok(f"model file (mq8): {gguf}")
+    mmproj = folder / fam["mmproj"]
+    if vision != "none":                               # the image encoder: Unsloth's mmproj, pinned, size + SHA-256 checked
         if not a.gguf_dir and not have(mmproj) and not mmproj.with_name(mmproj.name + ".part").exists():
             # another size of this model has it already (the same file, kept beside each size): linked here, not fetched again
             if share_sibling_file(mmproj, Path(a.models_dir), mmproj.name, fam["sha256"][mmproj.name][0]):
@@ -10004,7 +10026,12 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     ok(f"tokenizer: {pack / 'tokenizer'}")
 
     step(7, "writing the start script")
-    args = ["--native", str(gguf), "--max-context", str(ctx), "--prefill", "auto", "--mtp", str(fam["mtp"])]
+    prefill = "256" if vram_gb <= 6.5 else "auto"   # fork: 0.1.66 OOMs on 4 GB cards with auto (512): "not enough VRAM for the hybrid experts' buffers and slots" (measured on a 4 GB A2000); 256 is the working recipe
+    args = ["--native", str(gguf), "--max-context", str(ctx), "--prefill", prefill, "--mtp", str(fam["mtp"])]
+    if a.kv in ("fp16", "int8", "q4_0", "turbo3"):     # the own path's --kv (q36_engine): fp16 / int8 / 4-bit rotated / turbo3
+        args += ["--kv", a.kv]                          # turbo3: 112 B per row instead of q4_0's 128 (256-wide heads)
+    if model == "UD-IQ2_XXS" and vram_gb <= 6.5 and "--expert-vram" not in args:
+        args += ["--expert-vram", f"{max(vram_gb - 3.7, 0.3):.1f}"]   # the measured 4 GB recipe: the dense side keeps its room on the card, the experts run from RAM
     if kv:
         args += ["--kv", kv]
         ok(f"KV cache: --kv {kv}")
@@ -11486,7 +11513,7 @@ def main() -> int:
         return 2
     _hy4_ask = _peek("--family") in HY4_FAMILIES or bool(_peek("--model") and model_alias(_peek("--model")) in HY4_FAMILIES["hy4-flash"]["models"])
     _ink_ask = _peek("--family") in INKLING_FAMILIES or bool(_peek("--model") and model_alias(_peek("--model")) in INKLING_FAMILIES["inkling-2-mini"]["models"])
-    if sys.platform == "darwin" and not CONTROL and not _hy4_ask and not _ink_ask:       # a Mac: metal/setup_mac.py (the Metal engine); the app (Control mode), Hy4-Flash and Inkling-2-Mini go on below.
+    if sys.platform == "darwin" and not CONTROL and not _hy4_ask and not _ink_ask:       # a Mac: metal/setup_mac.py (the Metal engine); the app (Control mode) and Hy4-Flash go on below.
         return mac_setup(sys.argv[1:])                 # (after the retired names above, so a Mac gets the same sentence and exit 2, M1 11-16)
     if (_peek("--family") and _peek("--family") not in {**FAMILIES, **OWN_PATH_FAMILIES, **HY4_FAMILIES, **INKLING_FAMILIES}) \
             or (_peek("--model") and not _peek("--family") and model_alias(_peek("--model")) not in MODELS
@@ -11510,9 +11537,11 @@ def main() -> int:
     ap.add_argument("--rope-scale", type=float,
                     help="the extension factor, finite and >= 1 (default: the final context over the trained "
                          "262144, at least 1 - 1.5 for 384K, 2 for 512K, 1 inside the trained range)")
-    ap.add_argument("--kv", choices=["int8", "q4_0", "k8v4", "fp16", "fp8", "k8v8"],
+    ap.add_argument("--kv", choices=["int8", "q4_0", "turbo2", "turbo3", "k3v8", "k8v4", "fp16", "fp8", "k8v8"],
                     help="KV cache precision above 8K context: int8 (default), q4_0 (half the memory, a little less "
-                         "precise) k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell) or fp16 (16-bit, twice the memory of int8)")
+                         "precise), turbo2 (2-bit Hadamard-rotated, 320 B/cell), turbo3 (3-bit Hadamard-rotated, "
+                         "448 B/cell), k3v8 (asymmetric: rotated 3-bit K + rotated 8-bit V, 752 B/cell), "
+                         "k8v4 (hybrid: INT8 K + 4-bit V, 816 B/cell), fp8, k8v8 or fp16 (16-bit, twice the memory of int8)")
     ap.add_argument("--vision", choices=["yes", "no", "none", "gpu", "cpu"],
                     help="let the model read images (on by default where the model can; yes = the best reader for this card: the CPU "
                          "under 24 GB of VRAM, the GPU from 24 GB, any make; gpu / cpu = that reader; no = text only)")
@@ -11962,18 +11991,22 @@ def main() -> int:
     ram = ram_gb()
     cpu, avx2, avx512 = cpu_info()
     need = min(d["ram_gb"] for d in MODELS.values() if not d.get("mem_total"))   # Gyro counts VRAM + RAM: not a RAM floor
+    # fork: the smallest model this fork runs is the own-path 2-bit one (Qwen3.6-35B-A3B UD-IQ2_XXS, the experts
+    # from RAM, 16 GB) - not the Flash-Next Coder's 32 GB.  With the upstream floor alone the setup stopped on a
+    # 16 GB PC before the model menu: the fork's own model was never offered, never downloaded, never built.
+    need = min(need, min(d["ram_gb"] for f in OWN_PATH_FAMILIES.values() for d in f["models"].values()))
     low_ok = low_ram_fits("IQ1_M", ram, low_ram_vram(gpu)) and a.low_ram != "off"   # the smallest model, mapped
     if ram < need - 4 and not a.check and not low_ok:
-        # every model keeps ALL its experts in RAM (23+ GB); VRAM only holds a copy of the most-used ones, so a
-        # bigger GPU does not lower this.  The owner's rule: a stop by default, a risk the user can take (--model
-        # with --yes, or y)
-        confirm_risk(f"RAM: {ram:.0f} GB - the smallest model (the Coder) needs about {need} GB: Strata keeps all of "
-                     "the model's experts in RAM (23-50 GB, whatever the GPU), so the OS will page them from disk. "
-                     "Expect it to be very slow, and it may not start at all.", bool(a.model), a.yes,
-                     f"RAM: {ram:.0f} GB - the smallest model (the Coder) needs about {need} GB",
-                     "Strata keeps all of the model's experts in RAM (23-50 GB, whatever the GPU) and the GPU holds a "
-                     "copy of the most-used ones: it needs 32 GB of RAM or more (48 GB for the full model); --model "
-                     "NAME --yes installs one anyway")
+        # every Flash-Next model keeps ALL its experts in RAM (23+ GB); VRAM only holds a copy of the most-used
+        # ones, so a bigger GPU does not lower this.  The owner's rule: a stop by default, a risk the user can
+        # take (--model with --yes, or y)
+        confirm_risk(f"RAM: {ram:.0f} GB - the smallest model this fork runs (Qwen3.6-35B-A3B UD-IQ2_XXS, the "
+                     f"experts from RAM) needs about {need} GB; the Flash-Next sizes need 32 GB or more. Below "
+                     "that the OS pages the weights from disk: expect it to be very slow, and it may not start at all.",
+                     bool(a.model), a.yes,
+                     f"RAM: {ram:.0f} GB - the smallest model this fork runs needs about {need} GB",
+                     "the fork's own-path model needs 16 GB of RAM or more, the Flash-Next sizes 32 GB or more "
+                     "(48 GB for the full model); --model NAME --yes installs one anyway")
         warn(f"going on with {ram:.0f} GB of RAM, as you chose")
     ram_msg = (f"RAM: {ram:.0f} GB" if ram >= need - 4 else f"RAM: {ram:.0f} GB (less than the {need} GB the smallest model needs)"
                + ("; the GPU's VRAM makes up for it (the low-RAM mode)" if ram < need - 4 and low_ok else ""))
@@ -12022,6 +12055,25 @@ def main() -> int:
             else:
                 any_fits = any_fits or (model_fit_label(m, ram, gpu) == "fits" and not d.get("mem_total"))
             say(f"  {m:8s} needs ~{model_files_gb(m):.0f} GB of RAM + VRAM: {verdict}")
+        from strata_control import fit_label        # fork: the own-path sizes are what this fork runs on small cards - they are checked too
+        for f, fd in OWN_PATH_FAMILIES.items():
+            for m, md in fd["models"].items():
+                size = fd["sha256"][fd["file"].format(q=m)][0] / 1e9
+                verdict = fit_label.label(size, ram, low_ram_vram(gpu))
+                any_fits = any_fits or (verdict == "fits" and ram >= md["ram_gb"])
+                say(f"  {m:10s} {fd['title']}: {size:.1f} GB download, the experts from RAM: {verdict}"
+                    + ("" if ram >= md["ram_gb"] else f"   <- needs {md['ram_gb']} GB of RAM, you have {ram:.0f}"))
+        # fork: the Inkling-2-Mini sizes are checked too - they are the builds this fork aims at on 4-8 GiB cards
+        # (the planner's own lines; only the ones that fit here, plus SQ-10, the .strata build it recommends)
+        ivram, iram, iunified, iigpu, iarch = inkling_pc(gpu, ram)
+        iextra = inkling_plan_extra(gpu)
+        iextra["backend"] = "hip" if hip else "cuda"
+        for b, text in inkling_menu_lines(ivram, iram, iunified, None, inkling_family.DEFAULT_VISION,
+                                          igpu=iigpu, arch=iarch, extra=iextra):
+            if "fits" not in text and b != "SQ-10":
+                continue
+            any_fits = any_fits or "fits" in text
+            say(f"  {b:10s} Inkling-2-Mini: {text}")
         if not any_fits:
             # #977: every size says "does not fit", so the verdict says so too (and the exit code, for scripts). It only
             # reports: --model NAME --yes still installs one anyway.
@@ -12049,6 +12101,11 @@ def main() -> int:
         tier = tier_pick(ram, low_ram_vram(gpu))
         cyan, reset = menu_colour("36")
         rec_fam = STRIX_HALO_FAMILY if strix_halo_recommends(gpu, ram) and STRIX_HALO_FAMILY in fams else             tier[0] if tier and tier[0] in fams else fams[0]
+        if tier is None and rec_fam not in {**OWN_PATH_FAMILIES, **HY4_FAMILIES}:   # fork: no Flash-Next size fits this PC - the 2-bit own-path model is the recommendation (its own size question then picks UD-IQ2_XXS by RAM)
+            for f in OWN_PATH_FAMILIES:
+                if any(ram >= m["ram_gb"] for m in OWN_PATH_FAMILIES[f]["models"].values()):
+                    rec_fam = f
+                    break
         for i, f in enumerate(fams, 1):
             d = FAMILIES[f]
             say(f"  {i}) {cyan}{d['title']:20s}{reset} {d['by']} - {d['about']}" + ("   [experimental]" if d.get("experimental") else "")
@@ -12057,10 +12114,11 @@ def main() -> int:
         rest = [*(f for f in OWN_PATH_FAMILIES if not OWN_PATH_FAMILIES[f].get("feed")),
                 *(f for f in OWN_PATH_FAMILIES if OWN_PATH_FAMILIES[f].get("feed")), *feed_late,
                 *(f for f in HY4_FAMILIES if hy4_offered(a)),
-                *(f for f in INKLING_FAMILIES if inkling_offered(a))]
+                *(f for f in INKLING_FAMILIES if inkling_offered(a))]   # Inkling-2-Mini: same rule (inkling_offered)
         for j, f in enumerate(rest, len(fams) + 1):    # families with an engine path of their own
             d = {**FAMILIES, **OWN_PATH_FAMILIES, **HY4_FAMILIES, **INKLING_FAMILIES}[f]
-            say(f"  {j}) {cyan}{d['title']:20s}{reset} {d['by']} - {d['about']}   [new]" + (f"   ({FEED_UNAVAILABLE[f]['reason']})" if f in FEED_UNAVAILABLE else ""))
+            say(f"  {j}) {cyan}{d['title']:20s}{reset} {d['by']} - {d['about']}   [new]" + (f"   ({FEED_UNAVAILABLE[f]['reason']})" if f in FEED_UNAVAILABLE else "")
+                + ("   (recommended for this PC)" if f == rec_fam else ""))
         for u in FEED_UNAVAILABLE.values():            # a feed model this engine does not run: said, never offered (unless the owner's rule allows it, above)
             if not u.get("allowed"):
                 say(f"  -) {u['title']:20s} {u['by']} - {u['reason']}")
@@ -12250,10 +12308,17 @@ def main() -> int:
     if ctx > 8192 and not a.kv and not a.yes:
         say()
         say("  KV cache precision (the model's memory of the conversation):")
-        say("  1) 8-bit   (recommended: what every published number was measured with)")
-        say("  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long")
-        say("             documents; long-context lookups (needle tests) still pass")
-        kv = ["int8", "q4_0"][int(ask("KV cache?", ["1", "2"], "1", a.yes)) - 1]
+        say("  1) 8-bit     (recommended: what every published number was measured with)")
+        say("  2) 4-bit     half the memory (about 4% faster at 128K), but measurably less precise on long")
+        say("               documents; long-context lookups (needle tests) still pass")
+        say("  3) turbo2    2-bit after the Hadamard rotation (320 B/cell): the smallest cache, the most")
+        say("               precision loss; the pick when memory is the limit")
+        say("  4) turbo3    3-bit after the Hadamard rotation (448 B/cell): between turbo2 and 4-bit")
+        say("  5) k3v8      asymmetric (the llama.cpp -ctk/-ctv idea): rotated 3-bit keys + 8-bit values")
+        say("               (752 B/cell): the values stay near-exact, the keys take the 3-bit route")
+        say("  6) k8v4      hybrid: 8-bit keys, 4-bit values (816 B/cell)")
+        kv = ["int8", "q4_0", "turbo2", "turbo3", "k3v8", "k8v4"][
+            int(ask("KV cache?", [str(i) for i in range(1, 7)], "1", a.yes)) - 1]
     if ctx > 8192:
         ok(f"KV cache: {KV_WORDS.get(kv, kv)}")
     if MODELS[model].get("vision", fam.get("vision")) is False:     # UD-IQ4_XS: images, unlike UD-Q4_K_XL

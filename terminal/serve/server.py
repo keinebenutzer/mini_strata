@@ -5385,6 +5385,37 @@ class Service:
                     | {"wallclock_s": r.get("wallclock_s", round(time.perf_counter() - r["_clock"], 3))}
                     for r in reversed(records)]
 
+    def _kv_options(self) -> dict | None:
+        """The CTk possibilities read from terminal/setup.py (KV_WORDS and the --kv choices), not hardcoded."""
+        cached = getattr(self, "_kv_options_cache", False)
+        if cached is not False:
+            return cached
+        try:
+            import ast
+            src = Path(__file__).resolve().parent.parent / "setup.py"
+            tree = ast.parse(src.read_text(encoding="utf-8"), filename=str(src))
+            words, choices = {}, []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "KV_WORDS" for t in node.targets):
+                    try:
+                        words = ast.literal_eval(node.value)
+                    except Exception:
+                        pass
+                if isinstance(node, ast.Call):
+                    f = node.func
+                    name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+                    if name == "add_argument" and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "--kv":
+                        for kw in node.keywords:
+                            if kw.arg == "choices":
+                                try:
+                                    choices = ast.literal_eval(kw.value)
+                                except Exception:
+                                    pass
+            self._kv_options_cache = {"words": words, "choices": choices} if (words or choices) else None
+        except Exception:
+            self._kv_options_cache = None
+        return self._kv_options_cache
+
     def metrics(self, all_requests=False) -> dict:
         """GET /metrics: what the Monitor tab shows - the engine's facts, what it is doing, the last requests, and
         the hardware (with a minute of history per series)."""
@@ -5440,6 +5471,9 @@ class Service:
                   # KV cache is gone and the Context gauge must not show it as cached
                   "gen": getattr(self.engine, "gen", None),
                   **dict(getattr(self.engine, "info", {}) or {})}
+        kv_opts = self._kv_options()
+        if kv_opts:
+            engine["kv_options"] = kv_opts
         if getattr(self.vision, "cpu_note", None):         # the card had no room for the picture reader: the Terminal says so in its summary
             engine["vision_note"] = self.vision.cpu_note
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
