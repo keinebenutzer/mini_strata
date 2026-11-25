@@ -816,7 +816,7 @@ PREVIEW_FAMILIES = OWN_PATH_FAMILIES             # the earlier name (tools and t
 # Tencent Hy4-Flash (220B-A12B), Strata's own `.strata` v1.0 builds: a family with its own engine program (strata-hy4, a component like a model shape's engine), its own files
 # (one build + the Engram shard every build shares + an optional Vision shard) and its own installer, install_hy4_flash.  Not in OWN_PATH_FAMILIES: that table's installer is
 # the single-GGUF one (mmproj, MTP, GGUF tokenizer) and its membership is pinned by tests.  The files, sizes and rules are strata_control/hy4_family.py and hy4_fit.py.
-from strata_control import hy4_family, hy4_fit  # noqa: E402
+from strata_control import hy4_family, hy4_fit, inkling_family, inkling_fit  # noqa: E402
 HY4_FAMILIES = {
     hy4_family.FAMILY: {
         "title": hy4_family.TITLE, "by": hy4_family.BY, "tag": hy4_family.TAG, "name": hy4_family.FAMILY, "arch": hy4_family.ARCH, "hy4": True, "vision": hy4_family.DEFAULT_VISION,
@@ -825,6 +825,111 @@ HY4_FAMILIES = {
         "models": {b: {"about": hy4_family.BUILD_ABOUT[b], "ram_gb": int(-(-hy4_fit.BUILDS[b]["footprint_gb"] // 1))} for b in hy4_fit.ORDER[::-1]},
     }
 }
+INKLING_FAMILIES = {
+    inkling_family.FAMILY: {
+        "title": inkling_family.TITLE, "by": inkling_family.BY, "tag": inkling_family.TAG, "name": inkling_family.FAMILY, "arch": inkling_family.ARCH, "inkling": True, "vision": inkling_family.DEFAULT_VISION,
+        "about": "a fast 26.4B-A3.4B (5.4B looped-active) multimodal reasoning & agentic MoE with embedded DSpark drafter and 1..64 concurrent slots",
+        "license": "Thinking Machines Inkling-2-Mini: https://huggingface.co/thinkingmachines/Inkling-2-Mini",
+        "models": {b: {"about": inkling_family.BUILD_ABOUT[b], "ram_gb": int(-(-inkling_fit.BUILDS[b]["footprint_gb"] // 1)), "format": inkling_fit.BUILDS[b].get("format", "strata")} for b in inkling_fit.ORDER},
+    }
+}
+
+# Inkling-2-Mini custom/community local-file & Hugging Face import sources (official HF safetensors + Unsloth GGUFs).
+# Native `.strata` v1.1 (SQ-20, SQ-15, SQ-10 + Vision) remains the flagship recommended default; `strata-inkling` also
+# downloads and loads Unsloth GGUFs (`unsloth/Inkling-2-Mini-GGUF`) and official safetensors directly.
+INKLING_COMMUNITY_SOURCES = {
+    "safetensors": {
+        "title": "Inkling-2-Mini (Official HF safetensors)",
+        "repo": "thinkingmachines/Inkling-2-Mini",
+        "format": "safetensors",
+        "files": ("model-00001-of-00001.safetensors", "model.safetensors.index.json", "config.json",
+                  "tokenizer.json", "chat_template.jinja"),
+        "dspark": "mtp.safetensors",
+        "arch": "inkling2_loop",
+        "exe": "component:strata-inkling",
+        "recommended_default": False,
+    },
+    "gguf": {
+        "title": "Inkling-2-Mini (Community / Unsloth GGUF)",
+        "repo": "unsloth/Inkling-2-Mini-GGUF",
+        "format": "gguf",
+        "arch": "inkling2_loop",
+        "exe": "component:strata-inkling",
+        "recommended_default": False,
+        "models": {
+            b: {
+                "file": inkling_fit.BUILDS[b]["file"],
+                "ram_gb": int(-(-inkling_fit.BUILDS[b]["footprint_gb"] // 1)),
+                "about": inkling_family.BUILD_ABOUT[b],
+            }
+            for b in inkling_fit.GGUF_ORDER
+        },
+        "sha256": dict(inkling_family.UNSLOTH_GGUF_FILES),
+        "dspark": inkling_family.DSPARK_GGUF_FILE,
+        "mmproj": inkling_family.MMPROJ_BF16_FILE,
+    },
+}
+
+
+def detect_inkling_source_format(path: str | os.PathLike) -> str | None:
+    """Detect whether `path` is a `.strata`, official HF `safetensors`, or `.gguf` Inkling-2-Mini source."""
+    p = Path(path)
+    if p.is_dir():
+        if (p / "model.safetensors.index.json").is_file() or (p / "model-00001-of-00001.safetensors").is_file():
+            return "safetensors"
+        if any(f.suffix.lower() == ".safetensors" and f.name != "mtp.safetensors" for f in p.iterdir() if f.is_file()):
+            return "safetensors"
+        return None
+    if not p.is_file():
+        return None
+    low = p.name.lower()
+    if low.endswith(".strata"):
+        return "strata"
+    if low.endswith(".safetensors") or low == "model.safetensors.index.json":
+        return "safetensors"
+    if low.endswith(".gguf"):
+        try:
+            with p.open("rb") as fh:
+                if fh.read(4) == b"GGUF":
+                    return "gguf"
+        except OSError:
+            pass
+    return None
+
+
+def build_inkling_import_args(
+    model_path: str | os.PathLike,
+    *,
+    max_context: int = 32768,
+    parallel: int = 1,
+    gpus: int = 1,
+    ep_split: float | None = None,
+    kv: str | None = None,
+    vram_reserve_mib: int | None = None,
+    cpu_threads: int | None = None,
+    dspark_path: str | os.PathLike | None = None,
+    vision_path: str | os.PathLike | None = None,
+) -> list[str]:
+    """Build unified `strata-inkling` engine args for `.strata` (default), official `safetensors`, or `.gguf`."""
+    args = ["--native", str(model_path), "--max-context", str(max_context)]
+    if parallel > 1:
+        args += ["--parallel", str(parallel)]
+    if gpus > 1:
+        args += ["--gpus", str(gpus)]
+        if ep_split is not None:
+            args += ["--ep-split", f"{ep_split:.3f}"]
+    if kv:
+        args += ["--kv", str(kv)]
+    if vram_reserve_mib is not None and vram_reserve_mib >= 0:
+        args += ["--vram-reserve-mib", str(vram_reserve_mib)]
+    if cpu_threads is not None and cpu_threads > 0:
+        args += ["--cpu-threads", str(cpu_threads)]
+    if dspark_path:
+        args += ["--dspark", str(dspark_path)]
+    if vision_path:
+        args += ["--vision", str(vision_path)]
+    return args
+
 
 
 # Every model file Strata downloads has a fixed size and SHA-256: (repository, file name) -> (bytes, sha256).  download()
@@ -995,6 +1100,14 @@ def _urlopen(req, timeout=None):
     (strata_control/acquisition.py), only an explicit setup, update or install does."""
     acquisition.require("a download")
     try:
+        from strata_control import transfer as _tr
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        auth = _tr.hf_auth_headers(url)
+        if auth and isinstance(req, urllib.request.Request) and not req.has_header("Authorization"):
+            req.add_unredirected_header("Authorization", auth["Authorization"])
+    except Exception:                                  # noqa: BLE001 - optional HF_TOKEN helper never breaks a public download
+        pass
+    try:
         # strata_control/netpolicy.py: `timeout` bounds the connection phase (lookup, connect, TLS, the answer's headers); a read after
         # the answer that gets no byte for netpolicy.STALL_S ends the connection
         return netpolicy.urlopen(req, timeout=timeout)
@@ -1021,9 +1134,9 @@ def net_fail(e: "netpolicy.NetFailure", url: str, what=None):
 def run(cmd, cwd=None, env=None, check=True, quiet=False):
     """An install, build or preparation step (pip, cmake, a package manager, tools/*.py): never part of a start."""
     acquisition.require("an install or build step (" + Path(str(cmd[0])).name + ")")
-    if CONTROL:                                        # the app: only this Python running a bundled tool (or strata-hy4 --export-tokenizer)
+    if CONTROL:                                        # the app: only this Python running a bundled tool (or strata-hy4/strata-inkling --export-tokenizer)
         argv = [str(c) for c in cmd]
-        hy4_tok = len(argv) >= 2 and Path(argv[0]).name.lower() in ("strata-hy4", "strata-hy4.exe") and argv[1] == "--export-tokenizer"
+        hy4_tok = len(argv) >= 2 and Path(argv[0]).name.lower() in ("strata-hy4", "strata-hy4.exe", "strata-inkling", "strata-inkling.exe") and argv[1] == "--export-tokenizer"
         if not hy4_tok and (len(argv) < 2 or os.path.normcase(argv[0]) != os.path.normcase(sys.executable) or argv[1] == "-m" or
                 Path(argv[1]).resolve().parent not in ((ROOT / "tools").resolve(), (engine_src() / "metal" / "tools").resolve())):
             raise acquisition.AcquisitionRefused("the desktop app's installer only runs its bundled preparation tools; "
@@ -7691,9 +7804,9 @@ def choices_from_config(cfg_path: Path) -> dict:
     """The setup answers a config was written with (family, size, context, KV, images, projection, network)."""
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     tag = cfg_path.stem[len("strata-"):]
-    special_fams = {**OWN_PATH_FAMILIES, **HY4_FAMILIES}
+    special_fams = {**OWN_PATH_FAMILIES, **HY4_FAMILIES, **INKLING_FAMILIES}
     own = next((f for f, d in special_fams.items() if tag.startswith(d["tag"])), None)
-    if own is not None:                                # Qwen3.6 / Hy4-Flash: own sizes; no Flash-Next KV / projection settings
+    if own is not None:                                # Qwen3.6 / Hy4-Flash / Inkling-2-Mini: own sizes; no Flash-Next KV / projection settings
         d = special_fams[own]
         size = next((m for m in d["models"] if m.lower() == tag[len(d["tag"]):].lower()), None)
         a = cfg.get("args", [])
@@ -7702,7 +7815,7 @@ def choices_from_config(cfg_path: Path) -> dict:
         kv = a[a.index("--kv") + 1] if "--kv" in a and a.index("--kv") + 1 < len(a) else None
         return {"family": own, "model": size, "context": int(ctx) if ctx and ctx.isdigit() else None,
                 "kv": kv if kv in ("fp16", "int8", "q4_0", "turbo3") else None,
-                "vision": ("yes" if "--vision" in a else "none") if d.get("hy4") else (("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "none"),
+                "vision": ("yes" if "--vision" in a else "none") if (d.get("hy4") or d.get("inkling")) else (("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "none"),
                 "esp": "off", "host": cfg.get("host"), "api_key": cfg.get("api_key"),
                 "port": cfg.get("port"), "gpu": cfg.get("gpu"), "layer_split": None,
                 "cuda": 12 if config_toolkit(cfg) == 12 else None, "vram_reserve_mib": None}
@@ -7730,7 +7843,7 @@ def choices_from_config(cfg_path: Path) -> dict:
 
 def calibration_targets(have: list, model: str | None, family: str | None) -> list:
     """#2036: the installed configs `--calibrate --model X` (and/or --family) means; every config with neither."""
-    skip = set(OWN_PATH_FAMILIES) | set(HY4_FAMILIES)
+    skip = set(OWN_PATH_FAMILIES) | set(HY4_FAMILIES) | set(INKLING_FAMILIES)
     if not (model or family):
         return [c for c in have if choices_from_config(c)["family"] not in skip]
     out = []
@@ -11303,6 +11416,30 @@ def mac_hy4_setup(a) -> int:
     return install_hy4_flash(a, a.family or hy4_family.FAMILY, gpu, False, False, None, False, a.port or 8080, ram, None)
 
 
+def mac_inkling_setup(a) -> int:
+    """Thinking Machines Inkling-2-Mini on a Mac (Apple Silicon, Metal): unified memory, strata-inkling Metal component."""
+    from strata_control import mac_fit as MF
+    say("Strata - Inkling-2-Mini on a Mac (Apple Silicon, Metal)")
+    step(1, "checking your Mac")
+    info = MF.mac_info()
+    ram = float(info["ram_gb"] or ram_gb())
+    ok(f"{info['chip']}, {ram:.0f} GB unified memory, macOS {info['macos'] or '?'}")
+    problems = MF.mac_problems(info, need_compiler=False)
+    for p in problems:
+        warn(p)
+    data, _ = data_folder_for(a)
+    if a.models_dir is None:
+        a.models_dir = str(data / "models")
+    free = free_gb(data if data.exists() else home())
+    ok(f"free disk: {free:.0f} GB at {data}")
+    if a.check:
+        return 1 if problems else 0
+    if problems:
+        fail(problems[0])
+    gpu = {"index": 0, "name": info["chip"], "vendor": "apple", "vram_gb": 0.0, "unified_gb": ram, "uma": True, "count": 1}
+    return install_inkling2(a, a.family or inkling_family.FAMILY, gpu, False, False, None, False, a.port or 8080, ram, None)
+
+
 def main() -> int:
     try:                                               # the engine programs setup runs start no debugger on a user's machine (strata_control/childenv.py)
         from strata_control.childenv import quiet_crash_env
@@ -11322,20 +11459,23 @@ def main() -> int:
         say("  " + retired.NOT_OFFERED)                # DeepSeek: no longer offered (strata_control/retired.py)
         return 2
     _hy4_ask = _peek("--family") in HY4_FAMILIES or bool(_peek("--model") and model_alias(_peek("--model")) in HY4_FAMILIES["hy4-flash"]["models"])
-    if sys.platform == "darwin" and not CONTROL and not _hy4_ask:       # a Mac: metal/setup_mac.py (the Metal engine); the app (Control mode) and Hy4-Flash go on below.
+    _ink_ask = _peek("--family") in INKLING_FAMILIES or bool(_peek("--model") and model_alias(_peek("--model")) in INKLING_FAMILIES["inkling-2-mini"]["models"])
+    if sys.platform == "darwin" and not CONTROL and not _hy4_ask and not _ink_ask:       # a Mac: metal/setup_mac.py (the Metal engine); the app (Control mode) and Hy4-Flash go on below.
         return mac_setup(sys.argv[1:])                 # (after the retired names above, so a Mac gets the same sentence and exit 2, M1 11-16)
-    if (_peek("--family") and _peek("--family") not in {**FAMILIES, **OWN_PATH_FAMILIES, **HY4_FAMILIES}) \
+    if (_peek("--family") and _peek("--family") not in {**FAMILIES, **OWN_PATH_FAMILIES, **HY4_FAMILIES, **INKLING_FAMILIES}) \
             or (_peek("--model") and not _peek("--family") and model_alias(_peek("--model")) not in MODELS
-                and not any(model_alias(_peek("--model")) in f["models"] for f in {**OWN_PATH_FAMILIES, **HY4_FAMILIES}.values())):
+                and not any(model_alias(_peek("--model")) in f["models"] for f in {**OWN_PATH_FAMILIES, **HY4_FAMILIES, **INKLING_FAMILIES}.values())):
         feed_models_setup(_peek("--feed"))             # a name the built-in tables do not know may be a model of the signed feed
         if _peek("--family") in FEED_UNAVAILABLE:
             fail(f"{FEED_UNAVAILABLE[_peek('--family')]['title']} is {FEED_UNAVAILABLE[_peek('--family')]['reason']}")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES) + list(HY4_FAMILIES),
+    ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES) + list(HY4_FAMILIES) + list(INKLING_FAMILIES),
                     help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, qwen36 = Qwen3.6-35B-A3B (pictures with --vision, "
-                         "several requests at once with --parallel; docs/QWEN36.md), hy4-flash = Tencent Hy4-Flash (SQ-64 / SQ-96 / SQ-128)")
+                         "several requests at once with --parallel; docs/QWEN36.md), hy4-flash = Tencent Hy4-Flash (SQ-64 / SQ-96 / SQ-128), "
+                         "inkling-2-mini = Thinking Machines Inkling-2-Mini (SQ-20 / SQ-15 / SQ-10)")
     ap.add_argument("--model", type=model_alias, choices=list(dict.fromkeys([*MODELS, *(m for f in PREVIEW_FAMILIES.values()
-                                                                       for m in f["models"]), *(m for f in HY4_FAMILIES.values() for m in f["models"])])))
+                                                                       for m in f["models"]), *(m for f in HY4_FAMILIES.values() for m in f["models"]),
+                                                                       *(m for f in INKLING_FAMILIES.values() for m in f["models"])])))
     ap.add_argument("--context", type=int)
     ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"],
                     help="the RoPE extension for a context past the model's trained 262144: linear (position "
@@ -11505,8 +11645,8 @@ def main() -> int:
     if getattr(a, "dsv41_package", None):              # DeepSeek's engine package: no longer offered (strata_control/retired.py)
         say("  " + retired.NOT_OFFERED)
         return 2
-    if a.model and a.model not in MODELS and a.family not in PREVIEW_FAMILIES and a.family not in HY4_FAMILIES:
-        ap.error(f"--model {a.model} is a size of " + ", ".join(f"--family {f}" for f, d in {**PREVIEW_FAMILIES, **HY4_FAMILIES}.items()
+    if a.model and a.model not in MODELS and a.family not in PREVIEW_FAMILIES and a.family not in HY4_FAMILIES and a.family not in INKLING_FAMILIES:
+        ap.error(f"--model {a.model} is a size of " + ", ".join(f"--family {f}" for f, d in {**PREVIEW_FAMILIES, **HY4_FAMILIES, **INKLING_FAMILIES}.items()
                                                               if a.model in d["models"]))
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
@@ -11517,6 +11657,8 @@ def main() -> int:
     if sys.platform == "darwin":
         if a.family in HY4_FAMILIES or (not a.family and a.model in HY4_FAMILIES["hy4-flash"]["models"]):
             return mac_hy4_setup(a)
+        if a.family in INKLING_FAMILIES or (not a.family and a.model in INKLING_FAMILIES["inkling-2-mini"]["models"]):
+            return mac_inkling_setup(a)
         if CONTROL:           # the app on a Mac: model files only; the Metal engine is a component
             return mac_control_setup(a)
     if a.backend == "sycl":                            # Intel Arc: the app / Terminal's installer mode prepares the files and writes the config; a checkout builds from source
@@ -11557,7 +11699,7 @@ def main() -> int:
             a.gpus = ",".join(str(i) for i in order)
         else:
             a.gpu = order[0]
-    _fams = {**OWN_PATH_FAMILIES, **HY4_FAMILIES}
+    _fams = {**OWN_PATH_FAMILIES, **HY4_FAMILIES, **INKLING_FAMILIES}
     say("Strata - " + (_fams[a.family]["title"] if a.family in _fams else "Qwen3.8-Flash-Next")
         + " on a normal PC (a GPU + system RAM + CPU)")
     have = installed_configs()
@@ -11907,9 +12049,10 @@ def main() -> int:
                 + (f"   (recommended for Strix Halo: {STRIX_HALO_MODEL})" if f == rec_fam and rec_fam != fams[0] else ""))
         rest = [*(f for f in OWN_PATH_FAMILIES if not OWN_PATH_FAMILIES[f].get("feed")),
                 *(f for f in OWN_PATH_FAMILIES if OWN_PATH_FAMILIES[f].get("feed")), *feed_late,
-                *(f for f in HY4_FAMILIES if hy4_offered(a))]       # Hy4-Flash: listed where an engine, and files or a source, exist (hy4_offered)
+                *(f for f in HY4_FAMILIES if hy4_offered(a)),
+                *(f for f in INKLING_FAMILIES if inkling_offered(a))]   # Inkling-2-Mini: same rule (inkling_offered)
         for j, f in enumerate(rest, len(fams) + 1):    # families with an engine path of their own
-            d = {**FAMILIES, **OWN_PATH_FAMILIES, **HY4_FAMILIES}[f]
+            d = {**FAMILIES, **OWN_PATH_FAMILIES, **HY4_FAMILIES, **INKLING_FAMILIES}[f]
             say(f"  {j}) {cyan}{d['title']:20s}{reset} {d['by']} - {d['about']}   [new]" + (f"   ({FEED_UNAVAILABLE[f]['reason']})" if f in FEED_UNAVAILABLE else "")
                 + ("   (recommended for this PC)" if f == rec_fam else ""))
         for u in FEED_UNAVAILABLE.values():            # a feed model this engine does not run: said, never offered (unless the owner's rule allows it, above)
@@ -11924,6 +12067,8 @@ def main() -> int:
         return install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted)
     if family in HY4_FAMILIES:                         # Hy4-Flash: its own engine program (strata-hy4), its own files, its own steps 2-7
         return install_hy4_flash(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted)
+    if family in INKLING_FAMILIES:                     # Inkling-2-Mini: its own engine program (strata-inkling), its own files, its own steps 2-7
+        return install_inkling2(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted)
     fam = FAMILIES[family]
     SHAPE_ENGINE.clear()
     if fam.get("shape"):                               # a feed model of its own shape: its own engine component (strata_control/shape_engine.py)
