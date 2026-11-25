@@ -12010,6 +12010,17 @@ def main() -> int:
                 any_fits = any_fits or (verdict == "fits" and ram >= md["ram_gb"])
                 say(f"  {m:10s} {fd['title']}: {size:.1f} GB download, the experts from RAM: {verdict}"
                     + ("" if ram >= md["ram_gb"] else f"   <- needs {md['ram_gb']} GB of RAM, you have {ram:.0f}"))
+        # fork: the Inkling-2-Mini sizes are checked too - they are the builds this fork aims at on 4-8 GiB cards
+        # (the planner's own lines; only the ones that fit here, plus SQ-10, the .strata build it recommends)
+        ivram, iram, iunified, iigpu, iarch = inkling_pc(gpu, ram)
+        iextra = inkling_plan_extra(gpu)
+        iextra["backend"] = "hip" if hip else "cuda"
+        for b, text in inkling_menu_lines(ivram, iram, iunified, None, inkling_family.DEFAULT_VISION,
+                                          igpu=iigpu, arch=iarch, extra=iextra):
+            if "fits" not in text and b != "SQ-10":
+                continue
+            any_fits = any_fits or "fits" in text
+            say(f"  {b:10s} Inkling-2-Mini: {text}")
         if not any_fits:
             # #977: every size says "does not fit", so the verdict says so too (and the exit code, for scripts). It only
             # reports: --model NAME --yes still installs one anyway.
