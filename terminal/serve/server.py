@@ -328,6 +328,7 @@ from serve.mcp import McpCancelled, hub_from_config, resolve_image_results  # no
 from serve import appendlog  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve import expert_heat  # noqa: E402
+from serve import kv_options  # noqa: E402
 from serve import commit_limit  # noqa: E402
 from serve import oomd_pacer  # noqa: E402
 from serve import lastrun  # noqa: E402
@@ -5386,33 +5387,16 @@ class Service:
                     for r in reversed(records)]
 
     def _kv_options(self) -> dict | None:
-        """The CTk possibilities read from terminal/setup.py (KV_WORDS and the --kv choices), not hardcoded."""
+        """The CTk possibilities read from terminal/setup.py (KV_WORDS and the --kv choices), not hardcoded,
+        and kept to the ones the running engine's own --kv parser takes (serve/kv_options.py): the menu lists
+        the main tree's whole set, and a q36 engine answers its four missing words with exit 2."""
         cached = getattr(self, "_kv_options_cache", False)
-        if cached is not False:
+        if cached is not False and getattr(self, "_kv_options_arch", None) == self.model_arch:
             return cached
+        self._kv_options_arch = self.model_arch
         try:
-            import ast
-            src = Path(__file__).resolve().parent.parent / "setup.py"
-            tree = ast.parse(src.read_text(encoding="utf-8"), filename=str(src))
-            words, choices = {}, []
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "KV_WORDS" for t in node.targets):
-                    try:
-                        words = ast.literal_eval(node.value)
-                    except Exception:
-                        pass
-                if isinstance(node, ast.Call):
-                    f = node.func
-                    name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
-                    if name == "add_argument" and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "--kv":
-                        for kw in node.keywords:
-                            if kw.arg == "choices":
-                                try:
-                                    choices = ast.literal_eval(kw.value)
-                                except Exception:
-                                    pass
-            self._kv_options_cache = {"words": words, "choices": choices} if (words or choices) else None
-        except Exception:
+            self._kv_options_cache = kv_options.options_for(self.model_arch)
+        except Exception:  # noqa: BLE001 - a setup.py that cannot be read leaves the row out, not broken
             self._kv_options_cache = None
         return self._kv_options_cache
 
@@ -5474,6 +5458,10 @@ class Service:
         kv_opts = self._kv_options()
         if kv_opts:
             engine["kv_options"] = kv_opts
+        if not engine.get("kv") and not engine.get("kv_dtype"):
+            # a runner that names no KV width in its INFO lines (the q36 engine prints only batch_slots):
+            # the width the run config gave it, so the Monitor's KV row is not simply empty
+            engine["kv"] = kv_options.configured_kv(self.engine)
         if getattr(self.vision, "cpu_note", None):         # the card had no room for the picture reader: the Terminal says so in its summary
             engine["vision_note"] = self.vision.cpu_note
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
